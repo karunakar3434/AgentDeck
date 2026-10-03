@@ -128,6 +128,20 @@ enum DebugAutomation {
             let mainH = NSScreen.screens.first?.frame.height ?? 0
             cg.location = CGPoint(x: screenPoint.x, y: mainH - screenPoint.y)
             if let e = NSEvent(cgEvent: cg) { w.sendEvent(e) }
+        case "menulabel":
+            // Accessibility text of the menu bar item (the label view sets it from the live count).
+            var out: [String] = []
+            func walk(_ e: Any, _ d: Int) {
+                guard d < 8, let el = e as? NSAccessibilityProtocol else { return }
+                let label = (e as? NSObject)?.value(forKey: "accessibilityLabel") as? String ?? ""
+                if !label.isEmpty { out.append(label) }
+                for c in ((e as? NSObject)?.value(forKey: "accessibilityChildren") as? [Any]) ?? [] { walk(c, d + 1) }
+                _ = el
+            }
+            for w in NSApp.windows where String(describing: type(of: w)).contains("StatusBar") {
+                if let b = findView(in: w.contentView, as: NSStatusBarButton.self) { walk(b, 0); out.append("width=\(Int(b.frame.width))") }
+            }
+            try? out.joined(separator: " | ").write(toFile: rest.first ?? "/tmp/agentdeck-menulabel.txt", atomically: true, encoding: .utf8)
         case "menubar":
             let b = statusItemButton()
             try? "button=\(b.map { String(describing: type(of: $0)) } ?? "nil") action=\(b?.action.map(NSStringFromSelector) ?? "-") target=\(b?.target.map { String(describing: type(of: $0)) } ?? "-")".write(toFile: "/tmp/agentdeck-menubar.txt", atomically: true, encoding: .utf8)
@@ -144,6 +158,14 @@ enum DebugAutomation {
             } else {
                 let report = FrameMeter.shared.stop()
                 try? report.write(toFile: rest.count > 1 ? rest[1] : "/tmp/agentdeck-meter.txt", atomically: true, encoding: .utf8)
+            }
+        case "key":
+            // key <chars> [cmd|opt|shift…] | key up/down/return/escape: in-process key events to the key window
+            sendKey(rest.first ?? "", modifiers: Array(rest.dropFirst()))
+        case "statusitem":
+            // Render the menu bar item (all status bar windows of this app) to PNG.
+            for (i, w) in NSApp.windows.enumerated() where String(describing: type(of: w)).contains("StatusBar") && w.frame.minY >= 0 {
+                write(capture(w), to: (rest.first ?? "/tmp/agentdeck-status").appending("-\(i).png"))
             }
         case "views":
             // Dump the AppKit view tree (class, frame, row counts) to check what cacheDisplay can't draw.
@@ -195,6 +217,31 @@ enum DebugAutomation {
         }
         guard let window else { return }
         write(capture(window), to: path)
+    }
+
+    private static func sendKey(_ key: String, modifiers: [String]) {
+        guard let w = mainWindow() else { return }
+        w.makeKeyAndOrderFront(nil)
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers.contains("cmd") { flags.insert(.command) }
+        if modifiers.contains("opt") { flags.insert(.option) }
+        if modifiers.contains("shift") { flags.insert(.shift) }
+        let special: [String: (String, UInt16)] = [
+            "up": (String(UnicodeScalar(NSUpArrowFunctionKey)!), 126), "down": (String(UnicodeScalar(NSDownArrowFunctionKey)!), 125),
+            "return": ("\r", 36), "escape": ("\u{1b}", 53),
+        ]
+        let (chars, code) = special[key] ?? (key, 0)
+        if flags.contains(.command), let main = NSApp.mainMenu, main.performKeyEquivalent(with:
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                             windowNumber: w.windowNumber, context: nil, characters: chars, charactersIgnoringModifiers: chars,
+                             isARepeat: false, keyCode: code)!) { return }
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                                        windowNumber: w.windowNumber, context: nil, characters: chars, charactersIgnoringModifiers: chars,
+                                        isARepeat: false, keyCode: code) {
+                w.sendEvent(e)
+            }
+        }
     }
 
     private static func statusItemButton() -> NSStatusBarButton? {
