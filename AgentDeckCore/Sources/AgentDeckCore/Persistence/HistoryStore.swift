@@ -65,8 +65,9 @@ private let logger = Logger(subsystem: "com.karun.AgentDeck", category: "History
 ///   stopping source) can't abandon a write midway.
 /// - `close()` flushes and stops the drain task. The store stays usable: a later `enqueue` restarts the
 ///   drain task. That matters because `shared(at:)` hands the same instance to the next source after a switch.
-/// - Errors are logged and swallowed. Reads return empty results, and a failing write batch is retried one
-///   op per transaction, so one bad op can't sink the rest.
+/// - Errors are logged and swallowed, and reads return empty results. In a write batch, an op that fails on
+///   its own data is dropped without affecting the rest. A database-wide failure (busy, disk full, I/O)
+///   puts the batch back in the buffer (at most `maxBufferedOps`) to retry on the next tick.
 ///
 /// Only `shared(at:)` stores live for the whole process. Call `flush()` or `close()` before releasing any
 /// other store, because ops still in the buffer at deinit are dropped.
@@ -85,10 +86,14 @@ final class HistoryStore: Sendable {
         /// Wakes the drain task; nil while it isn't running.
         var signal: AsyncStream<Void>.Continuation?
         var drainTask: Task<Void, Never>?
+        /// Consecutive batches that failed with a database-wide error (throttles logging).
+        var failureStreak = 0
     }
 
     /// How long the drain task waits after the first enqueue before writing the batch.
     static let batchInterval: Duration = .seconds(1)
+    /// The most ops kept while the database is unavailable. Beyond this, the oldest are dropped.
+    static let maxBufferedOps = 5_000
 
     private init(database: any DatabaseWriter, path: String?, health: SourceHealth) {
         self.database = database
@@ -127,10 +132,12 @@ final class HistoryStore: Sendable {
 
     /// Opens (creating the parent directory if needed) and migrates the database at `url`, without the
     /// shared registry. Prefer `shared(at:)`; this exists for tests that reopen a file.
-    /// - A corrupt or unreadable file (any failure other than busy, locked, permission, read-only, full,
-    ///   out of memory, or can't-open) is renamed to `<name>.broken-<yyyyMMdd-HHmmss>` (with its `-wal`/`-shm`)
-    ///   and a fresh database is created.
-    /// - If that also fails, the store is in memory with `health = .degraded`.
+    /// - Only a corrupt file (`SQLITE_CORRUPT`, `SQLITE_NOTADB`) is renamed to
+    ///   `<name>.broken-<yyyyMMdd-HHmmss>` (with its `-wal`/`-shm`) and replaced by a fresh database.
+    /// - Any other failure leaves the file untouched and gives an in-memory store with `health = .degraded`:
+    ///   busy or locked, permissions, can't open, disk full, a failed migration, a parent path that isn't a
+    ///   directory. The next launch tries the file again.
+    /// - The same in-memory fallback applies if recreating after a rename fails.
     static func open(at url: URL) -> HistoryStore {
         let fileURL = url.standardizedFileURL
         var failure: any Error
@@ -192,12 +199,10 @@ final class HistoryStore: Sendable {
         return queue
     }
 
-    /// Environmental failures, where renaming the file wouldn't help or would hide a transient condition.
+    /// Only real corruption justifies moving the user's file aside.
     private static func shouldQuarantine(_ error: any Error) -> Bool {
         guard let error = error as? DatabaseError else { return false }   // e.g. creating the directory failed
-        let keep: [ResultCode] = [.SQLITE_BUSY,.SQLITE_LOCKED, .SQLITE_PERM, .SQLITE_READONLY, .SQLITE_FULL,
-                                     .SQLITE_NOMEM, .SQLITE_CANTOPEN, .SQLITE_AUTH]
-        return !keep.contains(error.resultCode)
+        return error.resultCode == .SQLITE_CORRUPT || error.resultCode == .SQLITE_NOTADB
     }
 
     /// Renames the database and its `-wal`/`-shm` files to `<name>.broken-<yyyyMMdd-HHmmss>[-n]`.
@@ -232,24 +237,23 @@ final class HistoryStore: Sendable {
     func enqueue(_ op: HistoryOp) {
         state.withLock { state in
             state.buffer.append(op)
-            if state.drainTask == nil {
-                startDrainTask(&state)
-                state.signal?.yield()
-            } else if state.buffer.count == 1 {
-                state.signal?.yield()   // a non-empty buffer already has a wake-up pending
-            }
+            // Otherwise a non-empty buffer already has a wake-up pending.
+            if state.drainTask == nil || state.buffer.count == 1 { scheduleDrain(&state) }
         }
     }
 
-    /// Writes everything enqueued before this call; on return it is committed. Also done automatically about
-    /// 1 s after an enqueue. Even with an empty buffer this waits its turn on the serialized writer, so a batch
-    /// the drain task already took is committed before `flush()` returns.
+    /// Writes everything enqueued before this call. It also happens automatically about 1 s after an enqueue.
+    /// - On return the batch is committed. If the database is unavailable (locked by another process, disk
+    ///   full, I/O error), the batch is back at the front of the buffer instead, and the drain task retries it
+    ///   on its next tick. A flush never waits more than one busy timeout (2 s) on a locked database.
+    /// - Even with an empty buffer, this waits its turn on the serialized writer, so a batch the drain task
+    ///   already took is settled before `flush()` returns.
     @concurrent func flush() async {
         await Task.detached(priority: .utility) { [self] in await writeBuffer() }.value
     }
 
-    /// Flushes and stops the drain task. Idempotent. The store stays usable, and a later `enqueue`
-    /// restarts the drain task.
+    /// Flushes and stops the drain task. Idempotent. The store stays usable: a later `enqueue` restarts the
+    /// drain task. So does a flush that fails, so buffered ops keep being retried.
     @concurrent func close() async {
         let (task, signal) = state.withLock { state in
             defer { state.drainTask = nil; state.signal = nil }
@@ -259,6 +263,15 @@ final class HistoryStore: Sendable {
         task?.cancel()    // interrupts the batching sleep; a write already started still completes
         await task?.value
         await flush()
+    }
+
+    /// Ops waiting to be written (for tests and diagnostics).
+    var pendingOpCount: Int { state.withLock { $0.buffer.count } }
+
+    /// Starts the drain task if needed and wakes it.
+    private func scheduleDrain(_ state: inout DrainState) {
+        if state.drainTask == nil { startDrainTask(&state) }
+        state.signal?.yield()
     }
 
     private func startDrainTask(_ state: inout DrainState) {
@@ -283,85 +296,178 @@ final class HistoryStore: Sendable {
                     return state.buffer
                 }
                 guard !ops.isEmpty else { return }
-                Self.apply(ops, in: db)
+                let prepared = Self.prepare(ops)
+                guard !prepared.isEmpty else { return }
+                do {
+                    try Self.write(prepared, in: db)
+                    self.recordSuccess()
+                } catch {
+                    self.requeue(prepared.map(\.op), after: error)
+                }
             }
         } catch {
+            // No write access, so nothing was taken from the buffer. Try again on the next tick.
             logger.error("History write failed: \(String(describing: error), privacy: .public)")
+            state.withLock { state in
+                if !state.buffer.isEmpty { scheduleDrain(&state) }
+            }
         }
     }
 
-    /// Applies a batch in one transaction. If that fails, retries each op in its own transaction, dropping
-    /// (and logging) only the ops that still fail.
-    private static func apply(_ ops: [HistoryOp], in db: Database) {
+    /// An op with its SQL-ready records.
+    private struct PreparedOp {
+        enum Write {
+            case runDuration(RunDurationRecord)
+            case finishedTask(HistoryTaskRecord, [HistoryRunRecord])
+            case removeTask(String)
+            case scanCache(ScanCacheRecord)
+        }
+        var op: HistoryOp
+        var write: Write
+    }
+
+    /// Encodes the JSON snapshots before any transaction opens. Ops that can't be encoded (for example a
+    /// non-finite date) are dropped and logged here, so they can't fail a batch or come back on a retry.
+    private static func prepare(_ ops: [HistoryOp]) -> [PreparedOp] {
         let encoder = SnapshotCoding.makeEncoder()
-        do {
-            try db.inTransaction {
-                for op in ops { try apply(op, in: db, encoder: encoder) }
-                return .commit
-            }
-        } catch {
-            guard ops.count > 1 else {
-                logger.error("Dropped a history write: \(String(describing: error), privacy: .public)")
-                return
-            }
-            // Isolate the failing op(s) so the rest of the batch still lands.
-            var dropped = 0
-            var lastError = error
-            for op in ops {
+        var prepared: [PreparedOp] = []
+        prepared.reserveCapacity(ops.count)
+        var dropped = 0
+        var lastError: (any Error)?
+        for op in ops {
+            let write: PreparedOp.Write
+            switch op {
+            case .runDuration(let row):
+                write = .runDuration(RunDurationRecord(row))
+            case .finishedTask(let task):
                 do {
-                    try db.inTransaction {
-                        try apply(op, in: db, encoder: encoder)
+                    let (taskRecord, runRecords) = try task.records(encoder: encoder)
+                    write = .finishedTask(taskRecord, runRecords)
+                } catch {
+                    dropped += 1
+                    lastError = error
+                    continue
+                }
+            case .removeTask(let id):
+                write = .removeTask(id)
+            case .scanCache(let entry):
+                write = .scanCache(ScanCacheRecord(entry))
+            }
+            prepared.append(PreparedOp(op: op, write: write))
+        }
+        if let lastError {
+            logger.error("Dropped \(dropped) history writes that can't be encoded: \(String(describing: lastError), privacy: .public)")
+        }
+        return prepared
+    }
+
+    /// Writes a batch in one IMMEDIATE transaction, so a locked database costs at most one busy timeout.
+    /// Each op runs in a savepoint:
+    /// - An op-specific error (constraint, too big, type mismatch) rolls back only that op, which is dropped
+    ///   and logged.
+    /// - Any other error is database-wide. It rolls back the whole batch and is rethrown so the caller can
+    ///   requeue the batch.
+    private static func write(_ prepared: [PreparedOp], in db: Database) throws {
+        var dropped = 0
+        var lastError: (any Error)?
+        try db.inTransaction(.immediate) {
+            for item in prepared {
+                do {
+                    try db.inSavepoint {
+                        try apply(item.write, in: db)
                         return .commit
                     }
-                } catch {
+                } catch let error where isOpSpecific(error) {
                     dropped += 1
                     lastError = error
                 }
             }
-            if dropped > 0 {
-                logger.error("Dropped \(dropped) of \(ops.count) history writes: \(String(describing: lastError), privacy: .public)")
-            }
+            return .commit
+        }
+        if let lastError {
+            logger.error("Dropped \(dropped) of \(prepared.count) history writes: \(String(describing: lastError), privacy: .public)")
         }
     }
 
-    private static func apply(_ op: HistoryOp, in db: Database, encoder: JSONEncoder) throws {
-        switch op {
-        case .runDuration(let row):
-            let record = RunDurationRecord(row)
+    /// Errors caused by one op's data rather than by the state of the database.
+    private static func isOpSpecific(_ error: any Error) -> Bool {
+        guard let error = error as? DatabaseError else { return true }
+        return [ResultCode.SQLITE_CONSTRAINT, .SQLITE_TOOBIG, .SQLITE_MISMATCH].contains(error.resultCode)
+    }
+
+    private static func apply(_ write: PreparedOp.Write, in db: Database) throws {
+        switch write {
+        case .runDuration(let record):
             try db.execute(sql: RunDurationRecord.upsertSQL, arguments: record.upsertArguments)
-        case .finishedTask(let task):
-            let (taskRecord, runRecords) = try task.records(encoder: encoder)
-            try taskRecord.upsert(db)
-            try db.execute(sql: "DELETE FROM history_run WHERE task_id = ?", arguments: [taskRecord.id])
-            for run in runRecords {
+        case .finishedTask(let task, let runs):
+            try task.upsert(db)
+            try db.execute(sql: "DELETE FROM history_run WHERE task_id = ?", arguments: [task.id])
+            for run in runs {
                 try run.insert(db, onConflict: .ignore)    // a duplicate run id keeps its first occurrence
             }
         case .removeTask(let id):
             try db.execute(sql: "DELETE FROM history_task WHERE id = ?", arguments: [id])
-        case .scanCache(let entry):
-            try ScanCacheRecord(entry).upsert(db)
+        case .scanCache(let record):
+            try record.upsert(db)
+        }
+    }
+
+    /// Puts a batch that hit a database-wide error back at the front of the buffer, ahead of anything
+    /// enqueued since. The buffer is capped at `maxBufferedOps` by dropping the oldest ops, and the drain
+    /// task's next tick retries.
+    private func requeue(_ ops: [HistoryOp], after error: any Error) {
+        let (dropped, streak) = state.withLock { (state: inout DrainState) -> (Int, Int) in
+            state.buffer.insert(contentsOf: ops, at: 0)
+            let overflow = max(0, state.buffer.count - Self.maxBufferedOps)
+            if overflow > 0 { state.buffer.removeFirst(overflow) }
+            state.failureStreak += 1
+            scheduleDrain(&state)
+            return (overflow, state.failureStreak)
+        }
+        if streak == 1 || streak.isMultiple(of: 60) {
+            logger.error("History write failed (attempt \(streak)); keeping \(ops.count) ops for retry: \(String(describing: error), privacy: .public)")
+        }
+        if dropped > 0 {
+            logger.error("History write buffer is full; dropped the \(dropped) oldest ops")
+        }
+    }
+
+    private func recordSuccess() {
+        let streak = state.withLock { state in
+            defer { state.failureStreak = 0 }
+            return state.failureStreak
+        }
+        if streak > 0 {
+            logger.notice("History writes recovered after \(streak) failed attempts")
         }
     }
 
     // MARK: Reads
 
-    /// Completed samples (`outcome = 'completed'`, duration known), newest first, at most `perTypeLimit` per
-    /// agent type. `seconds = duration_ms / 1000`. A row without `ended_at` uses `started_at + duration`.
+    /// Completed samples (`outcome = 'completed'`, duration known), newest first: the newest `perTypeLimit`
+    /// per agent type plus the newest `perTypeLimit` per (agent type, model family), with family `other`
+    /// excluded because the estimator keeps no bucket for it. This is the same data the estimator's
+    /// type and family buckets hold, so an `Estimator` rebuilt from it matches the live one. A rarely used
+    /// family's bucket isn't lost behind newer runs of another family. That gives up to
+    /// `perTypeLimit × (families + 1)` rows per type. `seconds = duration_ms / 1000`. A row without
+    /// `ended_at` uses `started_at + duration`.
     @concurrent func loadSamples(perTypeLimit: Int) async -> [DurationSample] {
         guard perTypeLimit > 0 else { return [] }
         do {
             return try await database.read { db in
                 let rows = try Row.fetchAll(db, sql: """
                     SELECT agent_type, model_family, duration_ms, end_time FROM (
-                      SELECT tool_use_id, agent_type, model_family, duration_ms,
-                             COALESCE(ended_at, started_at + duration_ms / 1000.0) AS end_time,
-                             ROW_NUMBER() OVER (
-                               PARTITION BY agent_type
-                               ORDER BY COALESCE(ended_at, started_at + duration_ms / 1000.0) DESC, tool_use_id
-                             ) AS rank
-                      FROM run_duration
-                      WHERE outcome = 'completed' AND duration_ms IS NOT NULL)
-                    WHERE rank <= ?
+                      SELECT tool_use_id, agent_type, model_family, duration_ms, end_time,
+                             ROW_NUMBER() OVER (PARTITION BY agent_type
+                                                ORDER BY end_time DESC, tool_use_id) AS type_rank,
+                             ROW_NUMBER() OVER (PARTITION BY agent_type, model_family
+                                                ORDER BY end_time DESC, tool_use_id) AS family_rank
+                      FROM (
+                        SELECT tool_use_id, agent_type, model_family, duration_ms,
+                               COALESCE(ended_at, started_at + duration_ms / 1000.0) AS end_time
+                        FROM run_duration
+                        WHERE outcome = 'completed' AND duration_ms IS NOT NULL))
+                    WHERE type_rank <= ?1 OR (model_family <> 'other' AND family_rank <= ?1)
                     ORDER BY end_time DESC, agent_type, tool_use_id
                     """, arguments: [perTypeLimit])
                 return rows.map { row in

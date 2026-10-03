@@ -346,9 +346,15 @@ Resolution runs in `SnapshotBuilder`.
 estimate(type, family):
   b = bucket(type, family) if family != .other and bucket(type, family).count >= 5, else bucket(type)
   n = b.count;  confidence = EstimateConfidence(sampleCount: n)       // high ≥ 10, medium 3–9, low < 3
-  seconds = n >= 3 ? median(b) : default[type]   // Explore 60, Plan 120, general-purpose 180, others 150
+  d = default[type]                     // Explore 60, Plan 120, general-purpose 180, others 150
+  seconds = n >= 3 ? median(b)          // even count: mean of the two middle values
+          : n == 0 ? d
+          : (sum(b) + d) / (n + 1)      // 1–2 samples: the default counts as one extra sample
   return DurationEstimate(seconds, confidence, sampleCount: n)          // low renders with "~"
 ```
+
+- With 1–2 samples the blend keeps one unusual run from taking over the estimate, while real data still moves
+  it away from the generic default (one 120 s Explore run gives (120 + 60) / 2 = 90 s). Confidence stays low.
 
 - Estimates are memoized per key. A new sample invalidates the key and re-dirties sessions with running runs
   of that type.
@@ -438,11 +444,19 @@ CREATE TABLE scan_cache (                        -- estimate-scan progress per m
   decode is ignored and rebuilt from the transcript if it still exists.
 - **Migrations:** `DatabaseMigrator` with append-only named migrations (`v1`, `v2`, …). Shipped migrations
   are never edited. `eraseDatabaseOnSchemaChange` is DEBUG only.
-- **Open failure or corruption:** rename the file to `agentdeck.sqlite.broken-<date>` and recreate it. If that
-  also fails, use an in-memory `DatabaseQueue` and set `health = .degraded`.
+- **Corruption** (`SQLITE_CORRUPT` / `SQLITE_NOTADB` on open): rename the file and its `-wal`/`-shm` to
+  `agentdeck.sqlite.broken-<yyyyMMdd-HHmmss>` and recreate it. Other open failures leave the file untouched
+  and use an in-memory `DatabaseQueue` with `health = .degraded`; the next launch tries the file again. That
+  covers busy, permissions, can't open, and a failed migration. A failed recreate falls back the same way.
 - **Writes:** `enqueue(op)` is synchronous and just appends under a `Mutex`. A single drain task writes the
   whole buffer in one `dbPool.write` transaction every 1 s when non-empty, and on `stop()`. Upserts use
   `ON CONFLICT DO UPDATE` with `COALESCE`, so a call row and its later result merge.
+  - Snapshot JSON is encoded before the transaction opens; an op that can't be encoded is dropped.
+  - The batch runs in one `BEGIN IMMEDIATE` transaction with a savepoint per op, so a flush waits at most
+    one busy timeout (2 s).
+  - An op-specific error (constraint, too big, type mismatch) rolls back and drops only that op.
+  - A database-wide error (busy, full, I/O) puts the batch back at the front of the buffer for the next
+    tick. The buffer is capped at 5,000 ops, and the oldest are dropped first.
 - **Prune:** at launch and hourly.
   - `history_task` with `ended_at < now − max(historyWindow, 7 d)` (cascades to runs; the floor stops a brief window shrink from deleting data).
   - `run_duration` older than 180 d.
@@ -470,7 +484,8 @@ final class HistoryStore: Sendable {
     static func shared(at url: URL) -> HistoryStore       // one per file per process; falls back to in-memory + health
     static func inMemory() -> HistoryStore
     var health: SourceHealth { get }                      // .ok, or .degraded("…") after an open failure
-    func loadSamples(perTypeLimit: Int) async -> [DurationSample]      // outcome == completed, newest first
+    func loadSamples(perTypeLimit: Int) async -> [DurationSample]      // outcome == completed, newest first: the newest N
+                                                                       // per type and per (type, family ≠ other)
     func loadHistory(endedAfter: Date) async -> [StoredTask]           // tasks with runs, newest first
     func loadScanCache() async -> [String: ScanCacheEntry]             // keyed by path
     func enqueue(_ op: HistoryOp)                                      // synchronous, never blocks on I/O
@@ -499,6 +514,9 @@ struct ScanCacheEntry: Sendable, Hashable {
 // Support/FileID.swift (owned by the engine side): fileID = UInt64(st_ino) ^ (UInt64(st_dev) << 48)
 // SourceHealth lives in Source/AgentSource.swift: public enum SourceHealth: Sendable, Hashable { case ok, degraded(String) }
 ```
+
+The estimator expects de-duplicated samples. The engine adds at most one sample per Agent `tool_use` id,
+because live runs and scanner batches can report the same run.
 
 ## 12. Optional hooks
 

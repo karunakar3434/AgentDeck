@@ -214,6 +214,40 @@ import Testing
         #expect(await store.loadSamples(perTypeLimit: 0).isEmpty)
     }
 
+    /// Regression: ranking only per agent type lost a less-used family's bucket on relaunch
+    /// (opus estimated at 20 s from the DB versus 400 s live).
+    @Test(arguments: Kind.allCases)
+    func samplesReloadedFromTheDatabaseMatchTheLiveEstimator(kind: Kind) async throws {
+        let (store, directory) = try Self.makeStore(kind)
+        defer { Self.cleanup(directory) }
+        var samples: [DurationSample] = []
+        func add(_ id: String, _ family: ModelFamily, seconds: Double, at offset: TimeInterval) {
+            let endedAt = Self.now.addingTimeInterval(offset)
+            samples.append(DurationSample(agentType: "Explore", family: family, seconds: seconds, endedAt: endedAt))
+            store.enqueue(.runDuration(RunDurationRow(
+                toolUseID: id, sessionID: "s", agentType: "Explore", modelFamily: family,
+                startedAt: endedAt.addingTimeInterval(-seconds), endedAt: endedAt,
+                durationMs: Int(seconds * 1000), isExact: true, outcome: "completed")))
+        }
+        // 10 old unknown-family runs, then 30 opus runs at 400 s, then 50 newer haiku runs at 20 s.
+        for index in 0..<10 { add("other-\(index)", .other, seconds: 90, at: Double(index)) }
+        for index in 0..<30 { add("opus-\(index)", .opus, seconds: 400, at: 100 + Double(index)) }
+        for index in 0..<50 { add("haiku-\(index)", .haiku, seconds: 20, at: 1_000 + Double(index)) }
+        await store.flush()
+
+        let live = Estimator(samples: samples)
+        let loaded = await store.loadSamples(perTypeLimit: Estimator.bucketCapacity)
+        // 50 newest of the type (haiku), plus the 30 opus by family rank; the 'other' runs fall outside both.
+        #expect(loaded.count == 80)
+        let rebuilt = Estimator(samples: loaded)
+        #expect(rebuilt.estimate(agentType: "Explore", family: .opus)
+                == DurationEstimate(seconds: 400, confidence: .high, sampleCount: 30))
+        for family in ModelFamily.allCases {
+            #expect(rebuilt.estimate(agentType: "Explore", family: family)
+                    == live.estimate(agentType: "Explore", family: family))
+        }
+    }
+
     // MARK: Finished tasks
 
     @Test(arguments: Kind.allCases)
@@ -418,6 +452,61 @@ import Testing
         #expect(await store.loadHistory(endedAfter: .distantPast).count == 1)
     }
 
+    /// Opens a second connection to `url` that can keep a transaction open across accesses.
+    private static func lockingConnection(_ url: URL) throws -> DatabaseQueue {
+        var config = Configuration()
+        config.allowsUnsafeTransactions = true
+        return try DatabaseQueue(path: url.path, configuration: config)
+    }
+
+    @Test func unreadableFileIsLeftInPlace() async throws {
+        let directory = try Self.makeTempDirectory()
+        defer { Self.cleanup(directory) }
+        let url = directory.appendingPathComponent("agentdeck.sqlite")
+        let creator = try DatabaseQueue(path: url.path)
+        try await creator.write { db in try db.execute(sql: "CREATE TABLE keep(x); INSERT INTO keep VALUES (1)") }
+        try creator.close()
+        let original = try Data(contentsOf: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path) }
+
+        let store = HistoryStore.open(at: url)   // SQLITE_CANTOPEN
+        guard case .degraded = store.health else {
+            Issue.record("expected degraded health, got \(store.health)")
+            return
+        }
+        #expect(store.databasePath == nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["agentdeck.sqlite"])
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+        #expect(try Data(contentsOf: url) == original)
+    }
+
+    @Test func lockedFileIsLeftInPlace() async throws {
+        let directory = try Self.makeTempDirectory()
+        defer { Self.cleanup(directory) }
+        let url = directory.appendingPathComponent("agentdeck.sqlite")
+        let holder = try Self.lockingConnection(url)   // rollback-journal mode: EXCLUSIVE blocks readers too
+        try await holder.writeWithoutTransaction { db in
+            try db.execute(sql: "CREATE TABLE keep(x); INSERT INTO keep VALUES (1)")
+            try db.execute(sql: "BEGIN EXCLUSIVE")
+        }
+
+        // SQLITE_BUSY after the 2 s busy timeout. Open on a Dispatch queue, not a Swift concurrency thread,
+        // so the wait doesn't starve other suites running in parallel.
+        let store = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async { continuation.resume(returning: HistoryStore.open(at: url)) }
+        }
+        guard case .degraded = store.health else {
+            Issue.record("expected degraded health, got \(store.health)")
+            return
+        }
+        try await holder.writeWithoutTransaction { db in try db.execute(sql: "ROLLBACK") }
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(!names.contains { $0.contains("broken") }, "\(names)")
+        #expect(try await holder.read { db in try Int.fetchOne(db, sql: "SELECT count(*) FROM keep") } == 1)
+        try holder.close()
+    }
+
     // MARK: Buffered writes
 
     @Test func enqueueFlushAndReopenPersists() async throws {
@@ -536,5 +625,89 @@ import Testing
         store.enqueue(.finishedTask(Self.task("after", endedAt: Self.now.addingTimeInterval(1))))
         await store.flush()
         #expect(await store.loadHistory(endedAfter: .distantPast).map(\.snapshot.id) == ["after", "before"])
+    }
+
+    @Test func anOpRejectedByTheDatabaseIsDroppedAlone() async throws {
+        let store = HistoryStore.inMemory()
+        try await store.database.write { db in
+            try db.execute(sql: """
+                CREATE TEMP TRIGGER reject_bad BEFORE INSERT ON scan_cache WHEN NEW.path = '/bad'
+                BEGIN SELECT RAISE(ABORT, 'rejected'); END
+                """)
+        }
+        for path in ["/good1", "/bad", "/good2"] {
+            store.enqueue(.scanCache(ScanCacheEntry(path: path, sessionID: "s", fileID: 1, size: 1, mtime: Self.now, offset: 1)))
+        }
+        store.enqueue(.finishedTask(Self.task("t", endedAt: Self.now)))
+        await store.flush()
+        #expect(Set(await store.loadScanCache().keys) == ["/good1", "/good2"])
+        #expect(await store.loadHistory(endedAfter: .distantPast).map(\.snapshot.id) == ["t"])
+        #expect(store.pendingOpCount == 0)   // dropped, not requeued
+        await store.close()
+    }
+
+    /// Regression: a database-wide error used to be retried op by op, re-waiting the busy timeout each time.
+    @Test func lockedDatabaseDefersTheBatchInsteadOfBlocking() async throws {
+        let directory = try Self.makeTempDirectory()
+        defer { Self.cleanup(directory) }
+        let url = directory.appendingPathComponent("agentdeck.sqlite")
+        let store = HistoryStore.open(at: url)
+        let blocker = try Self.lockingConnection(url)
+        try await blocker.writeWithoutTransaction { db in try db.execute(sql: "BEGIN IMMEDIATE") }
+
+        for index in 0..<50 {
+            store.enqueue(.scanCache(ScanCacheEntry(path: "/locked/\(index)", sessionID: "s", fileID: 1, size: 1,
+                                                    mtime: Self.now, offset: 1)))
+        }
+        store.enqueue(.finishedTask(Self.task("locked", endedAt: Self.now)))
+        let clock = ContinuousClock()
+        let elapsed = await clock.measure { await store.flush() }
+        #expect(elapsed < .seconds(3.5), "flush blocked for \(elapsed)")
+        #expect(await store.loadScanCache().isEmpty)
+
+        // Enqueued after the failure: it must land after the requeued batch.
+        store.enqueue(.scanCache(ScanCacheEntry(path: "/locked/0", sessionID: "s", fileID: 1, size: 1,
+                                                mtime: Self.now, offset: 2)))
+        try await blocker.writeWithoutTransaction { db in try db.execute(sql: "ROLLBACK") }
+
+        // No explicit flush: the drain task retries by itself.
+        let deadline = clock.now + .seconds(15)
+        while clock.now < deadline {
+            if store.pendingOpCount == 0, await store.loadScanCache()["/locked/0"]?.offset == 2 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let cache = await store.loadScanCache()
+        #expect(cache.count == 50)
+        #expect(cache["/locked/0"]?.offset == 2)
+        #expect(await store.loadHistory(endedAfter: .distantPast).map(\.snapshot.id) == ["locked"])
+        await store.close()
+        try blocker.close()
+    }
+
+    @Test func requeuedOpsAreCappedByDroppingTheOldest() async throws {
+        let directory = try Self.makeTempDirectory()
+        defer { Self.cleanup(directory) }
+        let url = directory.appendingPathComponent("agentdeck.sqlite")
+        let store = HistoryStore.open(at: url)
+        let blocker = try Self.lockingConnection(url)
+        try await blocker.writeWithoutTransaction { db in try db.execute(sql: "BEGIN IMMEDIATE") }
+
+        let total = HistoryStore.maxBufferedOps + 10
+        for index in 0..<total {
+            store.enqueue(.scanCache(ScanCacheEntry(path: "/cap/\(index)", sessionID: "s", fileID: 1, size: 1,
+                                                    mtime: Self.now, offset: 1)))
+        }
+        await store.flush()   // fails and requeues, keeping the newest maxBufferedOps
+        #expect(store.pendingOpCount <= HistoryStore.maxBufferedOps)
+        try await blocker.writeWithoutTransaction { db in try db.execute(sql: "ROLLBACK") }
+        await store.flush()
+
+        let cache = await store.loadScanCache()
+        #expect(cache.count == HistoryStore.maxBufferedOps)
+        #expect(cache["/cap/9"] == nil)
+        #expect(cache["/cap/10"] != nil)
+        #expect(cache["/cap/\(total - 1)"] != nil)
+        await store.close()
+        try blocker.close()
     }
 }
