@@ -38,7 +38,7 @@ of a few hundred lines/s; one app instance.
 | `FSEventsWatcher` | `final class @unchecked Sendable` with a private serial `DispatchQueue` | The `FSEventStreamRef`; yields `[FSChange]` into an `.unbounded` `AsyncStream` (the engine de-dups by path) |
 | `EstimateScanner` | actor, `Task(priority: .background)` | Its own `LineParser`/`JSONDecoder` and scan progress. Writes through `HistoryStore`; hands samples to the engine |
 | `HistoryStore` | `final class Sendable` | `DatabasePool`, `Mutex<[HistoryOp]>` write buffer, one drain task |
-| `MockSimulator` | actor | Fake world, RNG, its own `Estimator` and `UpdateCoalescer` |
+| `MockSimulator` | actor | Fake world (`MockWorld`), seeded RNG, event queue; its own pull-based batching (≤ 1 batch per 16 ms, only changed tasks) |
 
 Parser, reducer, status rules, model resolver, estimator and snapshot builder are plain synchronous
 structs and functions (pure, testable), called only from the engine. Reading, parsing and applying one
@@ -531,12 +531,17 @@ first sight. It is checked at start, by FSEvents on `agentdeck/`, and by the swe
 
 ## 13. Mock simulator
 
-`MockSimulator` (actor):
-- **Determinism:** seeded SplitMix64 with a fixed default seed, driven by `DeckClock` (tests use `TestClock`).
-- **Loop:** a 250 ms tick advances the world, and changes go through the same `UpdateCoalescer` (16 ms batching, backpressure).
-- **Isolation:** source `"mock"`, no disk, no DB.
-- **Estimator:** its own instance, seeded with synthetic history so every confidence level shows: Explore 14
-  samples (high), Plan 5 (medium), `localbiz-qa` 1 (low, "~").
+`MockSimulator` (actor, in `Mock/MockAgentSource.swift`; the world itself is `Mock/MockWorld.swift`):
+- **Determinism:** seeded SplitMix64 (`Mock/SeededRandom.swift`); tests step `MockWorld.advance(to:)` directly and
+  can run faster than real time (`speed`).
+- **Loop (as built):** one task sleeps until the next scheduled event in `MockEventQueue` (tool call, launch,
+  finish…), handles everything due within 10 ms, and sleeps again; nothing runs between events.
+- **Batching (as built):** pull-based `AsyncStream(unfolding:)` rather than the shared `UpdateCoalescer`: when the
+  consumer asks, it waits until something changed and ≥ 16 ms passed since the last batch, then snapshots only the
+  dirty tasks. A slow consumer gets one merged batch, never a backlog.
+- **Isolation:** source `"mock"`, no disk, no DB; simulated tasks never post notifications (app side).
+- **Estimates:** synthetic per-type estimates with every confidence level represented (high, medium, and low with "~").
+- **Time scale:** durations are scaled down (demo 0.2×, stress 0.5×) so a demo task finishes in 1–4 minutes.
 
 **Each task:**
 - 4 project names. The main agent emits tool events every 1–4 s (Read/Grep/Bash/Edit/WebFetch with canned summaries).

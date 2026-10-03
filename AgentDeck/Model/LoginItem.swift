@@ -26,11 +26,12 @@ enum LoginItem {
             }
             try writeAgent()
         } else {
-            if SMAppService.mainApp.status == .enabled || SMAppService.mainApp.status == .requiresApproval {
-                try SMAppService.mainApp.unregister()
-            }
+            // Remove the LaunchAgent first so a failing unregister can't leave it behind.
             if FileManager.default.fileExists(atPath: agentURL.path) {
                 try FileManager.default.removeItem(at: agentURL)
+            }
+            if SMAppService.mainApp.status == .enabled || SMAppService.mainApp.status == .requiresApproval {
+                try SMAppService.mainApp.unregister()
             }
         }
     }

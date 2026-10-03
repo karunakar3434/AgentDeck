@@ -6,7 +6,7 @@ DEBUG_APP    := $(DERIVED)/Build/Products/Debug/AgentDeck.app
 RELEASE_APP  := $(DERIVED)/Build/Products/Release/AgentDeck.app
 XCODEBUILD   := xcodebuild -project $(PROJECT) -scheme $(SCHEME) -derivedDataPath $(DERIVED) -destination 'platform=macOS,arch=arm64' -quiet
 
-.PHONY: all build release run mock test install uninstall clean kill debugctl
+.PHONY: all build release run mock stress test install uninstall clean kill debugctl
 
 all: build
 
@@ -24,6 +24,10 @@ run: build kill
 
 mock: build kill
 	open -n $(DEBUG_APP) --args -mock
+
+# 20 tasks × 15 agents, for profiling (use a Release build for real numbers).
+stress: build kill
+	open -n $(DEBUG_APP) --args -mock -stress
 
 test:
 	cd AgentDeckCore && swift test
