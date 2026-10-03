@@ -452,11 +452,17 @@ final class HistoryStore: Sendable {
     /// `perTypeLimit × (families + 1)` rows per type. `seconds = duration_ms / 1000`. A row without
     /// `ended_at` uses `started_at + duration`.
     @concurrent func loadSamples(perTypeLimit: Int) async -> [DurationSample] {
+        await loadSampleRows(perTypeLimit: perTypeLimit).map(\.sample)
+    }
+
+    /// `loadSamples(perTypeLimit:)` with each sample's tool-use id (same rows, same order), so a caller can
+    /// tell which runs the estimator already holds.
+    @concurrent func loadSampleRows(perTypeLimit: Int) async -> [(toolUseID: String, sample: DurationSample)] {
         guard perTypeLimit > 0 else { return [] }
         do {
             return try await database.read { db in
                 let rows = try Row.fetchAll(db, sql: """
-                    SELECT agent_type, model_family, duration_ms, end_time FROM (
+                    SELECT tool_use_id, agent_type, model_family, duration_ms, end_time FROM (
                       SELECT tool_use_id, agent_type, model_family, duration_ms, end_time,
                              ROW_NUMBER() OVER (PARTITION BY agent_type
                                                 ORDER BY end_time DESC, tool_use_id) AS type_rank,
@@ -473,10 +479,11 @@ final class HistoryStore: Sendable {
                 return rows.map { row in
                     let durationMs: Int64 = row["duration_ms"]
                     let family: String = row["model_family"]
-                    return DurationSample(agentType: row["agent_type"],
-                                          family: ModelFamily(rawValue: family) ?? .other,
-                                          seconds: Double(durationMs) / 1000,
-                                          endedAt: HistoryTime.date(row["end_time"]))
+                    let sample = DurationSample(agentType: row["agent_type"],
+                                                family: ModelFamily(rawValue: family) ?? .other,
+                                                seconds: Double(durationMs) / 1000,
+                                                endedAt: HistoryTime.date(row["end_time"]))
+                    return (toolUseID: row["tool_use_id"], sample: sample)
                 }
             }
         } catch {

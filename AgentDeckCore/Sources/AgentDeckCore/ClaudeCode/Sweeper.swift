@@ -160,6 +160,7 @@ extension TranscriptEngine {
             let path = (dirPath as NSString).appendingPathComponent(name)
             guard case .main(let sid) = classifier.classify(path), files[path] == nil, !superseded.contains(path),
                   let st = FileStat.of(path: path) else { continue }
+            if let evicted = evictedMains[path], evicted.fileID == st.fileID, evicted.size == st.size { continue }
             if mainPathIndex[sid] == nil { mainPathIndex[sid] = path }
             if let stored = storedTasks[sid] {
                 if !Self.matches(stored, path: path, stat: st) { result.append((path, .main(sessionID: sid))) }

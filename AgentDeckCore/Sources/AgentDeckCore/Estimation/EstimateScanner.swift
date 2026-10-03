@@ -208,7 +208,6 @@ extension TranscriptEngine {
     /// Rebuilds the estimator from the DB (the scan's rows are there, keyed by tool-use id) and re-dirties
     /// every task whose estimates depend on it.
     func scanFinished(_ result: EstimateScanner.Result) async {
-        sampledRuns.formUnion(result.samples.map(\.toolUseID))
         await reloadEstimator()
     }
 

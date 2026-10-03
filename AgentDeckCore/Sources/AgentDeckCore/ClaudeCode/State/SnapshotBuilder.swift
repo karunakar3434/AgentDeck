@@ -1,11 +1,5 @@
 import Foundation
 
-/// A finished run's own duration sample, so its estimate can be computed from the other samples.
-struct OwnSample: Sendable, Equatable {
-    var endedAt: Date
-    var seconds: Double
-}
-
 /// `SessionState` + derived status → `TaskSnapshot` (pure apart from the injected lookups).
 enum SnapshotBuilder {
     static let source = "claude-code"
@@ -21,11 +15,11 @@ enum SnapshotBuilder {
     ///   - definitionModel: agent definition `model:` for a type (project first, then user).
     ///   - estimate: the live estimate for an unfinished run (type, family).
     ///   - finishedEstimate: the estimate for a finished run that wasn't watched finishing (no frozen
-    ///     estimate): run id, type, family, and its own sample to leave out.
+    ///     estimate), computed without the run's own sample: run id (= tool-use id), type, family.
     static func build(_ s: SessionState, status: StatusRules.Result,
                       definitionModel: (String) -> String?,
                       estimate: (String, ModelFamily) -> DurationEstimate?,
-                      finishedEstimate: (String, String, ModelFamily, OwnSample?) -> DurationEstimate?) -> Output {
+                      finishedEstimate: (String, String, ModelFamily) -> DurationEstimate?) -> Output {
         var usedDefinitions = false
         let mainResolution = ModelResolver.resolve(s.main, isMain: true, definitionModel: definitionModel)
         let mainModel = mainResolution.model
@@ -81,11 +75,7 @@ enum SnapshotBuilder {
             } else if let frozen = run.frozenEstimate {
                 est = frozen
             } else {
-                var own: OwnSample?
-                if runStatus == .done, let end = endedAt, let seconds = ownSeconds(run) {
-                    own = OwnSample(endedAt: end, seconds: seconds)
-                }
-                est = finishedEstimate(run.id, run.agentType, family, own)
+                est = finishedEstimate(run.id, run.agentType, family)
             }
             // The agent's own report first; a failure's reason first for failed runs.
             var summary: String?

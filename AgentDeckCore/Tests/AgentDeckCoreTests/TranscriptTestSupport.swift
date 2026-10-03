@@ -47,17 +47,18 @@ enum Fixtures {
     }
 
     /// Folds a fixture session in cold-load order (main → metas → subagents → custom title), like the engine.
-    static func reduce(_ sid: String, mainLines: Int? = nil, subagentLines: [String: Int] = [:],
+    /// `root` selects another fixture tree (e.g. `Fixtures/extra`, kept apart from the engine tests' tree).
+    static func reduce(_ sid: String, root: URL = Fixtures.root, mainLines: Int? = nil, subagentLines: [String: Int] = [:],
                        promote: Bool = true, now: Date = Fixtures.now) -> SessionState {
         let parser = LineParser()
         var s = SessionState(id: sid)
         s.mainSeen = true
-        var main = lines(mainPath(sid))
+        var main = lines(mainPath(sid, in: root))
         if let mainLines { main = Array(main.prefix(mainLines)) }
         for line in main {
             if let e = parser.parse(line) { SessionReducer.apply(e, owner: .main, to: &s, now: now) }
         }
-        let dir = subagentDir(sid)
+        let dir = subagentDir(sid, in: root)
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).sorted()
         for name in names where name.hasSuffix(".meta.json") {
             let aid = String(name.dropFirst(6).dropLast(10))
@@ -73,7 +74,7 @@ enum Fixtures {
                 if let e = parser.parse(line) { SessionReducer.apply(e, owner: .agent(aid), to: &s, now: now) }
             }
         }
-        let titlePath = (String(mainPath(sid).dropLast(6)) as NSString).appendingPathComponent("custom-title.json")
+        let titlePath = (String(mainPath(sid, in: root).dropLast(6)) as NSString).appendingPathComponent("custom-title.json")
         if let data = FileManager.default.contents(atPath: titlePath),
            let t = try? JSONDecoder().decode(CustomTitleFile.self, from: data), let title = t.customTitle {
             s.customTitle = title
@@ -91,7 +92,7 @@ enum Fixtures {
         return SnapshotBuilder.build(s, status: status,
                                      definitionModel: { defs.model(for: $0, projectPath: s.projectPath, now: now) },
                                      estimate: { estimator.estimate(agentType: $0, family: $1) },
-                                     finishedEstimate: { _, type, family, _ in estimator.estimate(agentType: type, family: family) }).snapshot
+                                     finishedEstimate: { _, type, family in estimator.estimate(agentType: type, family: family) }).snapshot
     }
 
     /// A writable copy of the fixtures in a temporary directory, every file's mtime set to `mtime`.

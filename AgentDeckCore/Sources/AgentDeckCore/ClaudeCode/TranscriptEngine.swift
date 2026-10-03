@@ -63,6 +63,9 @@ actor TranscriptEngine {
     var superseded: Set<String> = []
     /// Paths found missing, re-checked after the removal grace.
     var missingChecks: [String: Date] = [:]
+    /// Main transcripts of sessions evicted after leaving the window, with the identity and size they had:
+    /// not re-read until they change.
+    var evictedMains: [String: (fileID: UInt64, size: Int64)] = [:]
     var projectDirMtimes: [String: Date] = [:]
     var subagentDirMtimes: [String: Date] = [:]
     var hookFile: FileState?
@@ -95,21 +98,20 @@ actor TranscriptEngine {
     // MARK: Estimates and history
 
     var estimator = Estimator()
-    /// The estimator's samples by type (for estimates that leave out a run's own sample).
-    var samplesByType: [String: [DurationSample]] = [:]
+    /// Everything in `estimator`, by tool-use id (DB rows plus live finishes). The estimator is always
+    /// equivalent to a rebuild from these, so a run is never counted twice and can be left out by id.
+    var estimatorSamples: [String: DurationSample] = [:]
     /// Bumps whenever the estimator changes.
     var estimatorGeneration = 0
     var exclusionCache: [String: (generation: Int, estimate: DurationEstimate)] = [:]
-    /// Tool-use ids whose duration sample is in the in-memory estimator (live additions).
-    var sampledRuns: Set<String> = []
-    /// Last outcome written to `run_duration` per Agent run ("" = unfinished).
+    /// What was last written to `run_duration` per Agent run (outcome, duration, exactness, end).
     var recordedRuns: [String: String] = [:]
     /// Last history signature written per finished task.
     var savedTasks: [String: String] = [:]
     /// Main transcripts parsed by the engine (the estimate scanner skips them).
     var parsedMainPaths: Set<String> = []
     /// Non-nil while the estimator is being rebuilt from the DB: live samples taken meanwhile.
-    var samplesDuringReload: [DurationSample]?
+    var samplesDuringReload: [(toolUseID: String, sample: DurationSample)]?
 
     // MARK: Lifecycle
 
@@ -196,7 +198,7 @@ actor TranscriptEngine {
         }
         guard let history else { return }
         let now = clock.now()
-        async let samples = history.loadSamples(perTypeLimit: Self.samplesPerType)
+        async let samples = history.loadSampleRows(perTypeLimit: Self.samplesPerType)
         async let stored = history.loadHistory(endedAfter: now.addingTimeInterval(-configuration.historyWindow))
         setEstimatorSamples(await samples)
         for task in await stored where storedHistory[task.snapshot.id] == nil {
@@ -302,11 +304,7 @@ actor TranscriptEngine {
             readMeta(path, sessionID: sid, agentID: aid)
         case .subagent(let sid, let aid):
             guard ensureSessionLoaded(sid, childPath: path) else { return }
-            if files[path] == nil {
-                register(path, role: role)
-                sessionFiles[sid, default: SessionFiles()].subagents[aid] = path
-            }
-            readTracked(path)
+            trackSubagent(path, sessionID: sid, agentID: aid)
         case .title(let sid):
             guard ensureSessionLoaded(sid, childPath: path) else { return }
             readTitle(path, sessionID: sid)
@@ -341,8 +339,13 @@ actor TranscriptEngine {
     // MARK: Main transcripts and relocation
 
     func handleMain(_ path: String, sessionID sid: String) {
+        if let evicted = evictedMains[path] {
+            guard let st = FileStat.of(path: path), st.fileID != evicted.fileID || st.size != evicted.size else { return }
+            evictedMains[path] = nil      // it changed: a resumed session
+        }
         if superseded.contains(path) {
-            guard let current = sessionFiles[sid]?.main, FileStat.of(path: current) == nil else { return }
+            // An older duplicate: only used once the winning file is gone.
+            if let current = sessionFiles[sid]?.main, current != path, FileStat.of(path: current) != nil { return }
             superseded.remove(path)
         }
         if storedTasks[sid] != nil, sessions[sid] == nil {
@@ -380,10 +383,7 @@ actor TranscriptEngine {
             // Both exist: the newest mtime wins.
             if newStat.mtime > oldStat.mtime {
                 superseded.insert(old)
-                files[old] = nil
-                sessionFiles[sid]?.main = new
-                register(new, role: .main(sessionID: sid))
-                resetSession(sid)
+                loadSession(sid, mainPath: new)       // re-read from the new file and its directory
             } else {
                 superseded.insert(new)
             }
@@ -398,42 +398,74 @@ actor TranscriptEngine {
             missingChecks[old] = nil
             files[new] = moved
             sessionFiles[sid]?.main = new
-            if !rebindChildren(sid, oldMain: old, newMain: new) {
-                resetSession(sid)
+            guard rebindChildren(sid, oldMain: old, newMain: new) else {
+                loadSession(sid, mainPath: new)       // children were copied, not moved: re-read from there
                 return
             }
             readTracked(new)
         } else {
             // A copy at the new path: re-read the session from there.
-            files[old] = nil
-            missingChecks[old] = nil
-            sessionFiles[sid]?.main = new
-            register(new, role: .main(sessionID: sid))
-            resetSession(sid)
+            loadSession(sid, mainPath: new)
         }
     }
 
-    /// Moves sidecar/subagent file states under the new `<sid>/` directory. False when one can't be matched.
+    /// Moves sidecar/subagent file states under the new `<sid>/` directory, keeping their offsets. A child
+    /// whose directory hasn't moved yet stays at its old path (`trackSubagent`/`readMeta` rebind it when it
+    /// appears). False, with nothing changed, when a child exists at the new path as a different file.
     private func rebindChildren(_ sid: String, oldMain: String, newMain: String) -> Bool {
         guard var sf = sessionFiles[sid] else { return true }
         let oldDir = String(oldMain.dropLast(6))
         let newDir = String(newMain.dropLast(6))
-        func move(_ path: String) -> String? {
-            guard path.hasPrefix(oldDir + "/"), var fs = files[path] else { return path }
+        // Plan every move before touching `files`, so a failure leaves the tables consistent.
+        var moves: [(from: String, to: String)] = []
+        for path in sf.all where path != newMain && path.hasPrefix(oldDir + "/") {
+            guard let fs = files[path] else { continue }
             let target = newDir + path.dropFirst(oldDir.count)
-            guard let st = FileStat.of(path: target), st.fileID == fs.fileID else { return nil }
-            files[path] = nil
-            missingChecks[path] = nil
-            fs.path = target
-            fs.missingSince = nil
-            files[target] = fs
-            return target
+            if let st = FileStat.of(path: target) {
+                guard st.fileID == fs.fileID else { return false }
+                moves.append((path, target))
+            }
         }
-        for (aid, p) in sf.metas { guard let t = move(p) else { return false }; sf.metas[aid] = t }
-        for (aid, p) in sf.subagents { guard let t = move(p) else { return false }; sf.subagents[aid] = t }
-        if let p = sf.title { guard let t = move(p) else { return false }; sf.title = t }
+        for (from, to) in moves {
+            guard var fs = files.removeValue(forKey: from) else { continue }
+            missingChecks[from] = nil
+            fs.path = to
+            fs.missingSince = nil
+            files[to] = fs
+            for (aid, p) in sf.metas where p == from { sf.metas[aid] = to }
+            for (aid, p) in sf.subagents where p == from { sf.subagents[aid] = to }
+            if sf.title == from { sf.title = to }
+        }
         sessionFiles[sid] = sf
         return true
+    }
+
+    /// Tracks a subagent transcript and reads its new lines. When the agent is already tracked at another
+    /// path (its session directory moved), the same file keeps its offset; a different file resets the
+    /// session, so no transcript is folded in twice.
+    func trackSubagent(_ path: String, sessionID sid: String, agentID aid: String) {
+        if files[path] == nil {
+            if let old = sessionFiles[sid]?.subagents[aid], old != path, let oldState = files[old] {
+                guard let st = FileStat.of(path: path) else { return }
+                files[old] = nil
+                missingChecks[old] = nil
+                sessionFiles[sid]?.subagents[aid] = path
+                if st.fileID == oldState.fileID {
+                    var moved = oldState
+                    moved.path = path
+                    moved.missingSince = nil
+                    files[path] = moved
+                    readTracked(path)
+                } else {
+                    register(path, role: .subagent(sessionID: sid, agentID: aid))
+                    resetSession(sid)
+                }
+                return
+            }
+            register(path, role: .subagent(sessionID: sid, agentID: aid))
+            sessionFiles[sid, default: SessionFiles()].subagents[aid] = path
+        }
+        readTracked(path)
     }
 
     /// Makes sure the session of a sidecar/subagent file is loaded (loading it from its main file if
@@ -467,10 +499,25 @@ actor TranscriptEngine {
         let hadState = sessions[sid] != nil
         var sf = sessionFiles[sid] ?? SessionFiles()
         if let mainPath {
+            if let old = sf.main, old != mainPath {
+                files[old] = nil
+                missingChecks[old] = nil
+            }
             sf.main = mainPath
             mainPathIndex[sid] = mainPath
             parsedMainPaths.insert(mainPath)
             register(mainPath, role: .main(sessionID: sid))
+        }
+        if let dir {
+            // Files under another directory belong to a copy this session no longer reads.
+            let prefix = dir + "/"
+            for path in sf.all where path != sf.main && !path.hasPrefix(prefix) {
+                files[path] = nil
+                missingChecks[path] = nil
+            }
+            sf.metas = sf.metas.filter { $0.value.hasPrefix(prefix) }
+            sf.subagents = sf.subagents.filter { $0.value.hasPrefix(prefix) }
+            if let title = sf.title, !title.hasPrefix(prefix) { sf.title = nil }
         }
         sessionFiles[sid] = sf
         if hadState {
@@ -503,11 +550,7 @@ actor TranscriptEngine {
             }
         }
         for (aid, path) in metas where files[path] == nil { readMeta(path, sessionID: sid, agentID: aid) }
-        for (aid, path) in transcripts where files[path] == nil {
-            register(path, role: .subagent(sessionID: sid, agentID: aid))
-            sessionFiles[sid, default: SessionFiles()].subagents[aid] = path
-            readTracked(path)
-        }
+        for (aid, path) in transcripts where files[path] == nil { trackSubagent(path, sessionID: sid, agentID: aid) }
         let title = (dir as NSString).appendingPathComponent("custom-title.json")
         if files[title] == nil, FileStat.of(path: title) != nil { readTitle(title, sessionID: sid) }
     }
@@ -594,6 +637,19 @@ actor TranscriptEngine {
     /// Re-reads a meta sidecar (small, whole). A file caught mid-write fails to decode and is retried later.
     func readMeta(_ path: String, sessionID sid: String, agentID aid: String) {
         guard let st = FileStat.of(path: path) else { return }
+        if files[path] == nil, let old = sessionFiles[sid]?.metas[aid], old != path, let oldState = files[old] {
+            // Moved with its session directory: the same file needs no re-read. (Applying a meta again is
+            // idempotent, so a different file is simply read.)
+            files[old] = nil
+            missingChecks[old] = nil
+            sessionFiles[sid]?.metas[aid] = path
+            if oldState.fileID == st.fileID {
+                var moved = oldState
+                moved.path = path
+                moved.missingSince = nil
+                files[path] = moved
+            }
+        }
         if let fs = files[path], fs.fileID == st.fileID, fs.size == st.size, fs.mtime == st.mtime { return }
         guard let data = FileIO.readSmallFile(path, limit: 1 << 20),
               let meta = try? sidecarDecoder.decode(AgentMeta.self, from: data) else { return }
@@ -608,6 +664,10 @@ actor TranscriptEngine {
 
     func readTitle(_ path: String, sessionID sid: String) {
         guard let st = FileStat.of(path: path) else { return }
+        if let old = sessionFiles[sid]?.title, old != path {
+            files[old] = nil
+            missingChecks[old] = nil
+        }
         if let fs = files[path], fs.fileID == st.fileID, fs.size == st.size, fs.mtime == st.mtime { return }
         guard let data = FileIO.readSmallFile(path, limit: 64 * 1024),
               let file = try? sidecarDecoder.decode(CustomTitleFile.self, from: data) else { return }
@@ -740,6 +800,9 @@ actor TranscriptEngine {
             if let stored = storedTasks[id] {
                 let end = stored.snapshot.endedAt ?? stored.snapshot.lastActivityAt
                 guard StatusRules.storedInScope(stored.snapshot, now: now, historyWindow: configuration.historyWindow) else {
+                    storedTasks[id] = nil
+                    exclusionCache = exclusionCache.filter { key, _ in !stored.snapshot.runs.contains { $0.id == key } }
+                    if coalescer.markRemoved(id) { scheduleFlush() }
                     return nil
                 }
                 deadlines[id] = end.addingTimeInterval(configuration.historyWindow)
@@ -757,12 +820,18 @@ actor TranscriptEngine {
             s, status: status,
             definitionModel: { type in self.definitions.model(for: type, projectPath: projectPath, now: now) },
             estimate: { type, family in self.estimator.estimate(agentType: type, family: family) },
-            finishedEstimate: { runID, type, family, own in
-                self.estimate(excluding: own, cacheKey: runID, agentType: type, family: family)
+            finishedEstimate: { runID, type, family in
+                self.estimate(excludingRun: runID, agentType: type, family: family)
             })
         s.usedDefinitions = output.usedDefinitions
         sessions[id] = s
         recordTransitions(s, output.snapshot, status: status, now: now)
+        if !status.inScope, processState(for: id)?.alive != true {
+            // Left the window: the history DB keeps it; free the in-memory state.
+            evictSession(id)
+            if coalescer.markRemoved(id) { scheduleFlush() }
+            return nil
+        }
         lastStatus[id] = status
         var deadline = status.nextDeadline
         if let orphanDeadline { deadline = deadline.map { min($0, orphanDeadline) } ?? orphanDeadline }
@@ -798,64 +867,59 @@ actor TranscriptEngine {
         for i in snap.runs.indices.dropFirst() where snap.runs[i].status.isFinished {
             let r = snap.runs[i]
             let family = r.model.id == nil ? snap.mainModel.family : r.model.family
-            var own: OwnSample?
-            if r.status == .done, let end = r.endedAt {
-                own = OwnSample(endedAt: end, seconds: end.timeIntervalSince(r.startedAt))
-            }
-            snap.runs[i].estimate = estimate(excluding: own, cacheKey: r.id, agentType: r.agentType, family: family)
+            snap.runs[i].estimate = estimate(excludingRun: r.id, agentType: r.agentType, family: family)
         }
         return snap
     }
 
-    /// The estimate for a type and family, leaving out the run's own sample when it is in the estimator
-    /// (matched by end time and duration). Cached per run until the estimator changes.
-    func estimate(excluding own: OwnSample?, cacheKey: String, agentType: String, family: ModelFamily) -> DurationEstimate {
-        if let cached = exclusionCache[cacheKey], cached.generation == estimatorGeneration { return cached.estimate }
+    /// The estimate for a type and family without the run's own sample (looked up by its tool-use id).
+    /// Cached per run until the estimator changes.
+    func estimate(excludingRun runID: String, agentType: String, family: ModelFamily) -> DurationEstimate {
+        if let cached = exclusionCache[runID], cached.generation == estimatorGeneration { return cached.estimate }
         var result = estimator.estimate(agentType: agentType, family: family)
-        if let own, var samples = samplesByType[agentType], let index = Self.ownSampleIndex(own, in: samples) {
-            samples.remove(at: index)
-            result = Estimator(samples: samples).estimate(agentType: agentType, family: family)
+        if let own = estimatorSamples[runID], own.agentType == agentType {
+            let others = estimatorSamples.filter { $0.key != runID && $0.value.agentType == agentType }
+            result = Estimator(samples: Self.ordered(others)).estimate(agentType: agentType, family: family)
         }
-        exclusionCache[cacheKey] = (estimatorGeneration, result)
+        exclusionCache[runID] = (estimatorGeneration, result)
         return result
     }
 
-    /// The sample recorded for a run: same end (±1 s) and the closest duration (within max(2 s, 5 %)).
-    static func ownSampleIndex(_ own: OwnSample, in samples: [DurationSample]) -> Int? {
-        var best: (index: Int, diff: Double)?
-        for (i, sample) in samples.enumerated() where abs(sample.endedAt.timeIntervalSince(own.endedAt)) <= 1 {
-            let diff = abs(sample.seconds - own.seconds)
-            if diff <= max(2, own.seconds * 0.05), best.map({ diff < $0.diff }) ?? true { best = (i, diff) }
-        }
-        return best?.index
+    /// Samples in a deterministic order (end time, then id) so ties resolve the same way on every rebuild.
+    static func ordered(_ samples: [String: DurationSample]) -> [DurationSample] {
+        samples.sorted { ($0.value.endedAt, $0.key) < ($1.value.endedAt, $1.key) }.map(\.value)
     }
 
-    /// Replaces the estimator's samples (DB load or reload).
-    func setEstimatorSamples(_ samples: [DurationSample]) {
-        estimator = Estimator(samples: samples)
-        samplesByType = Dictionary(grouping: samples, by: \.agentType)
+    /// Replaces the estimator's contents (DB load or reload). Later rows win for the same tool-use id.
+    func setEstimatorSamples(_ rows: [(toolUseID: String, sample: DurationSample)]) {
+        estimatorSamples = Dictionary(rows.map { ($0.toolUseID, $0.sample) }, uniquingKeysWith: { _, later in later })
+        estimator = Estimator(samples: Self.ordered(estimatorSamples))
         estimatorGeneration += 1
         exclusionCache.removeAll(keepingCapacity: true)
     }
 
-    /// Adds one live sample (a run that finished while watched).
-    private func addLiveSample(_ sample: DurationSample) {
-        estimator.add(sample)
-        var list = samplesByType[sample.agentType] ?? []
-        list.append(sample)
-        if list.count > Estimator.bucketCapacity * 2 {
-            list.sort { $0.endedAt < $1.endedAt }
-            list.removeFirst(list.count - Estimator.bucketCapacity * 2)
+    /// Adds a run's sample, or replaces it when the run's duration changed (an exact duration after a
+    /// fallback finish, or a resumed run finishing again; architecture §16.3). Each tool-use id counts once.
+    /// Returns false when the estimator already holds exactly this sample.
+    @discardableResult
+    func putSample(_ sample: DurationSample, toolUseID id: String) -> Bool {
+        if let existing = estimatorSamples[id] {
+            guard existing != sample else { return false }
+            estimatorSamples[id] = sample
+            estimator = Estimator(samples: Self.ordered(estimatorSamples))   // no remove API: rebuild
+        } else {
+            estimatorSamples[id] = sample
+            estimator.add(sample)
         }
-        samplesByType[sample.agentType] = list
         estimatorGeneration += 1
-        samplesDuringReload?.append(sample)
+        samplesDuringReload?.append((id, sample))
+        return true
     }
 
     /// `run_duration` rows, live estimator samples and finished-task history (architecture §6, §9, §11).
     private func recordTransitions(_ s: SessionState, _ snapshot: TaskSnapshot, status: StatusRules.Result, now: Date) {
         guard let history else { return }
-        var newSampleTypes: Set<String> = []
+        var changedTypes: Set<String> = []
         for run in snapshot.runs.dropFirst() {
             guard let state = s.runs[run.id], state.isAgentCall else { continue }
             let outcome: String
@@ -865,26 +929,30 @@ actor TranscriptEngine {
             case .cancelled: outcome = "cancelled"
             case .queued, .running: outcome = ""
             }
-            guard recordedRuns[run.id] != outcome else { continue }
-            recordedRuns[run.id] = outcome
+            let finished = run.status.isFinished
+            let durationMs = finished ? SnapshotBuilder.ownSeconds(state).map { Int(($0 * 1000).rounded()) } : nil
+            let isExact = finished && state.exact?.durationMs != nil
+            let endedAt = finished ? run.endedAt : nil
+            // The row is rewritten whenever what it records changes, not only the outcome: an exact duration
+            // can follow a fallback finish with the same outcome.
+            let key = "\(outcome)|\(durationMs ?? -1)|\(isExact)|\(endedAt?.timeIntervalSinceReferenceDate ?? -1)"
+            guard recordedRuns[run.id] != key else { continue }
+            recordedRuns[run.id] = key
             let family = run.model.id == nil ? snapshot.mainModel.family : run.model.family
-            let durationMs = run.status.isFinished
-                ? SnapshotBuilder.ownSeconds(state).map { Int(($0 * 1000).rounded()) } : nil
             history.enqueue(.runDuration(RunDurationRow(
                 toolUseID: run.id, sessionID: s.id, agentType: run.agentType, modelFamily: family,
-                startedAt: run.startedAt, endedAt: run.status.isFinished ? run.endedAt : nil,
-                durationMs: durationMs, isExact: run.status.isFinished && state.exact?.durationMs != nil,
+                startedAt: run.startedAt, endedAt: endedAt, durationMs: durationMs, isExact: isExact,
                 outcome: outcome.isEmpty ? nil : outcome)))
-            // Live finishes feed the in-memory estimator once per tool-use id; runs finished before the
-            // load completed come from the DB (keyed by tool-use id) when the estimator is rebuilt.
-            if liveSampling, run.status == .done, let durationMs, !sampledRuns.contains(run.id) {
-                sampledRuns.insert(run.id)
-                addLiveSample(DurationSample(agentType: run.agentType, family: family,
-                                             seconds: Double(durationMs) / 1000, endedAt: run.endedAt ?? now))
-                newSampleTypes.insert(run.agentType)
+            // Live finishes feed the in-memory estimator, once per tool-use id (replacing an earlier duration).
+            // Runs finished before the cold load completed come from the DB when the estimator is rebuilt.
+            if liveSampling, run.status == .done, let durationMs,
+               putSample(DurationSample(agentType: run.agentType, family: family,
+                                        seconds: Double(durationMs) / 1000, endedAt: run.endedAt ?? now),
+                         toolUseID: run.id) {
+                changedTypes.insert(run.agentType)
             }
         }
-        if !newSampleTypes.isEmpty { redirtyEstimates(types: newSampleTypes, except: s.id) }
+        if !changedTypes.isEmpty { redirtyEstimates(types: changedTypes, except: s.id) }
 
         // Finished tasks go to history (for tier-2 loads and DB-only display after the transcript is gone).
         if snapshot.status == .done || snapshot.status == .failed, status.inScope,
@@ -960,16 +1028,53 @@ actor TranscriptEngine {
             // Gone for good: forget the file, keep the session (history keeps finished tasks).
             files[path] = nil
             if let sid = fs.role.sessionID, var sf = sessionFiles[sid] {
-                if sf.main == path { sf.main = nil }
+                let mainGone = sf.main == path
+                if mainGone { sf.main = nil }
                 if sf.title == path { sf.title = nil }
                 if let aid = fs.role.agentID {
                     if sf.subagents[aid] == path { sf.subagents[aid] = nil }
                     if sf.metas[aid] == path { sf.metas[aid] = nil }
                 }
                 sessionFiles[sid] = sf
+                if mainGone { adoptDuplicate(of: sid) }
             }
         }
         rescheduleTimer()
+    }
+
+    /// Drops everything held for a session that left the window (no live process). Its main file is
+    /// remembered by identity and size, so it is read again only when it changes.
+    func evictSession(_ sid: String) {
+        guard let s = sessions.removeValue(forKey: sid) else { return }
+        let sf = sessionFiles.removeValue(forKey: sid) ?? SessionFiles()
+        if let main = sf.main {
+            if let fs = files[main] { evictedMains[main] = (fs.fileID, fs.size) }
+            parsedMainPaths.remove(main)
+            subagentDirMtimes[(String(main.dropLast(6)) as NSString).appendingPathComponent("subagents")] = nil
+        }
+        for path in sf.all {
+            files[path] = nil
+            missingChecks[path] = nil
+        }
+        for id in s.runs.keys {
+            recordedRuns[id] = nil
+            exclusionCache[id] = nil
+        }
+        lastStatus[sid] = nil
+        deadlines[sid] = nil
+        savedTasks[sid] = nil
+        superseded = superseded.filter { classifier.classify($0) != .main(sessionID: sid) }
+    }
+
+    /// The session's main file is gone for good: forget its superseded duplicates and switch to the newest
+    /// one that still exists (it is re-read from 0).
+    private func adoptDuplicate(of sid: String) {
+        var best: (path: String, mtime: Date)?
+        for path in superseded where classifier.classify(path) == .main(sessionID: sid) {
+            superseded.remove(path)
+            if let st = FileStat.of(path: path), best.map({ st.mtime > $0.mtime }) ?? true { best = (path, st.mtime) }
+        }
+        if let best { handleMain(best.path, sessionID: sid) }
     }
 
     // MARK: Helpers

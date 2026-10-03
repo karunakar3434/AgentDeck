@@ -111,15 +111,18 @@ extension TranscriptEngine {
 
     /// Rebuilds the estimator from the history DB, where `run_duration` is keyed by tool-use id, so runs
     /// reported by both the engine and the scanner count once. Live samples taken meanwhile are kept.
-    func reloadEstimator() async {
+    /// - Parameter afterFlush: test seam, run between the flush and the DB read (to reproduce a run
+    ///   finishing mid-reload).
+    func reloadEstimator(afterFlush: (@Sendable () async -> Void)? = nil) async {
         guard let history else { return }
         samplesDuringReload = []
         await history.flush()
-        let samples = await history.loadSamples(perTypeLimit: Self.samplesPerType)
-        // Live finishes recorded while the DB was read weren't in the flushed batch.
-        setEstimatorSamples(samples + (samplesDuringReload ?? []))
+        await afterFlush?()
+        let rows = await history.loadSampleRows(perTypeLimit: Self.samplesPerType)
+        // Live finishes recorded while the DB was read may or may not be in `rows`; keyed by tool-use id
+        // they count once, with the live value winning.
+        setEstimatorSamples(rows + (samplesDuringReload ?? []))
         samplesDuringReload = nil
-        sampledRuns.formUnion(recordedRuns.filter { $0.value == "completed" }.keys)
         // Every estimate may have changed: running runs, and finished runs shown with the other samples.
         redirtyEstimates(types: nil)
     }

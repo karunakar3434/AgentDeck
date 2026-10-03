@@ -599,6 +599,242 @@ import Testing
         #expect(run?.estimate == DurationEstimate(seconds: 200, confidence: .medium, sampleCount: 3))
     }
 
+    // MARK: Review regressions
+
+    /// #1: re-parsing a session whose runs are already in the estimator (from the DB) adds nothing.
+    @Test func reparsedSessionsDoNotRecountTheirRuns() async throws {
+        let first = try EngineHarness(alive: [])
+        defer { first.cleanup() }
+        await first.engine.loadInitial()
+        await first.engine.stop()
+
+        let second = EngineHarnessSharingHistory(first, alive: [4242])
+        await second.engine.loadInitial()
+        #expect(await second.engine.sessionState(Fixtures.s08cb) == nil)       // served from history
+        #expect(await second.engine.sessionState(Fixtures.bd324) == nil)
+        let gp = await second.engine.currentEstimator.sampleCount(agentType: "general-purpose")
+        let guide = await second.engine.currentEstimator.sampleCount(agentType: "claude-code-guide")
+        #expect(gp == 1)
+        #expect(guide == 1)
+
+        // The transcript grows: parsed from 0 after liveSampling started.
+        let main = first.path(Self.relativeMain(Fixtures.s08cb))
+        try Self.append(Data((SessionReducerTests.prompt("resume", ts: "2026-10-02T23:59:58.000Z") + "\n").utf8), to: main)
+        await second.engine.handle([FSChange(path: main)])
+        #expect(await second.engine.snapshot(Fixtures.s08cb)?.run("toolu_014VmCt9hdrzPCCUfBoz8GxZ")?.status == .done)
+        #expect(await second.engine.currentEstimator.sampleCount(agentType: "general-purpose") == gp)
+
+        // A process appears for an unparsed session: parsed, nothing recounted.
+        let pidPath = first.path("sessions/4242.json")
+        try #"{"pid":4242,"sessionId":"\#(Fixtures.bd324)","status":"idle","procStart":"x","startedAt":1}"#
+            .write(toFile: pidPath, atomically: true, encoding: .utf8)
+        await second.engine.handle([FSChange(path: pidPath)])
+        #expect(await second.engine.sessionState(Fixtures.bd324) != nil)
+        #expect(await second.engine.snapshot(Fixtures.bd324)?.status == .idle)
+        #expect(await second.engine.currentEstimator.sampleCount(agentType: "claude-code-guide") == guide)
+    }
+
+    /// #2: the session directory moved in its own event (before or after the main file) keeps offsets.
+    @Test(arguments: [true, false])
+    func sessionDirectoryMovedSeparatelyKeepsOffsets(directoryFirst: Bool) async throws {
+        let h = try EngineHarness(alive: [])
+        defer { h.cleanup() }
+        await h.engine.loadInitial()
+        let before = try #require(await h.engine.snapshot(Fixtures.s08cb))
+        let oldMain = h.path(Self.relativeMain(Fixtures.s08cb))
+        let oldDir = String(oldMain.dropLast(6))
+        let project = h.path("projects/-Users-dev-moved")
+        try FileManager.default.createDirectory(atPath: project, withIntermediateDirectories: true)
+        let newMain = (project as NSString).appendingPathComponent("\(Fixtures.s08cb).jsonl")
+        let newDir = String(newMain.dropLast(6))
+
+        func moveDir() async throws {
+            try FileManager.default.moveItem(atPath: oldDir, toPath: newDir)
+            await h.engine.handle([FSChange(path: oldDir), FSChange(path: newDir)])
+        }
+        func moveMain() async throws {
+            try FileManager.default.moveItem(atPath: oldMain, toPath: newMain)
+            await h.engine.handle([FSChange(path: oldMain), FSChange(path: newMain)])
+        }
+        if directoryFirst {
+            try await moveDir()
+            try await moveMain()
+        } else {
+            try await moveMain()
+            try await moveDir()
+        }
+        let after = try #require(await h.engine.snapshot(Fixtures.s08cb))
+        let run = try #require(after.run("toolu_014VmCt9hdrzPCCUfBoz8GxZ"))
+        #expect(run.toolCallCount == 10)
+        #expect(Set(run.recentTools.map(\.id)).count == run.recentTools.count)
+        #expect(after.runs.map(\.toolCallCount) == before.runs.map(\.toolCallCount))
+        #expect(Self.normalized(after)?.runs == Self.normalized(before)?.runs)
+        let sub = FileIO.realPath((newDir as NSString).appendingPathComponent("subagents/agent-a140524516f2ac0a4.jsonl"))
+        let size = try FileManager.default.attributesOfItem(atPath: sub)[.size] as? Int
+        #expect(await h.engine.fileState(sub)?.offset == size.map(Int64.init))
+        // Growth of the moved subagent transcript is read incrementally.
+        try Self.append(Data((SessionReducerTests.subagentLine("a140524516f2ac0a4", ts: "2026-10-02T23:59:59.000Z") + "\n").utf8), to: sub)
+        await h.engine.handle([FSChange(path: sub)])
+        #expect(await h.engine.snapshot(Fixtures.s08cb)?.run("toolu_014VmCt9hdrzPCCUfBoz8GxZ")?.toolCallCount == 11)
+    }
+
+    /// #2: the main file and meta moved but the subagent transcript was copied (new inode): the rebind fails
+    /// as a whole (nothing half-moved), and the session is re-read once from the new directory.
+    @Test func partiallyCopiedChildrenReloadFromTheNewDirectory() async throws {
+        let h = try EngineHarness(alive: [])
+        defer { h.cleanup() }
+        await h.engine.loadInitial()
+        let before = try #require(await h.engine.snapshot(Fixtures.s08cb))
+        let oldMain = h.path(Self.relativeMain(Fixtures.s08cb))
+        let oldDir = String(oldMain.dropLast(6))
+        let project = h.path("projects/-Users-dev-copied")
+        let newMain = (project as NSString).appendingPathComponent("\(Fixtures.s08cb).jsonl")
+        let newDir = String(newMain.dropLast(6))
+        try FileManager.default.createDirectory(atPath: newDir + "/subagents", withIntermediateDirectories: true)
+        let meta = "/subagents/agent-a140524516f2ac0a4.meta.json", transcript = "/subagents/agent-a140524516f2ac0a4.jsonl"
+        try FileManager.default.moveItem(atPath: oldDir + meta, toPath: newDir + meta)
+        try FileManager.default.copyItem(atPath: oldDir + transcript, toPath: newDir + transcript)
+        try FileManager.default.copyItem(atPath: oldDir + "/custom-title.json", toPath: newDir + "/custom-title.json")
+        try FileManager.default.removeItem(atPath: oldDir)
+        try FileManager.default.moveItem(atPath: oldMain, toPath: newMain)
+        await h.engine.handle([FSChange(path: oldMain), FSChange(path: newMain)])     // no directory events
+
+        let after = try #require(await h.engine.snapshot(Fixtures.s08cb))
+        #expect(after.runs.map(\.toolCallCount) == before.runs.map(\.toolCallCount))
+        #expect(Self.normalized(after)?.runs == Self.normalized(before)?.runs)
+        #expect(after.title == before.title)
+        // The file table and the session's file list agree, all under the new directory.
+        let sf = try #require(await h.engine.sessionFiles[Fixtures.s08cb])
+        let realNewDir = FileIO.realPath(newDir)
+        #expect(sf.all.count == 4)
+        for path in sf.all {
+            #expect(path.hasPrefix(realNewDir), "\(path)")
+            #expect(await h.engine.fileState(path) != nil, "\(path)")
+        }
+        let tracked = await h.engine.files.values.filter { $0.role.sessionID == Fixtures.s08cb }.map(\.path)
+        #expect(Set(tracked) == Set(sf.all))
+    }
+
+    /// #3: an older duplicate of a session's transcript takes over once the newer one is deleted.
+    @Test func supersededDuplicateIsAdoptedAfterTheWinnerIsDeleted() async throws {
+        let root = try Fixtures.temporaryCopy()
+        let winner = root.appendingPathComponent(Self.relativeMain(Fixtures.s08cb)).path
+        let dupDir = root.appendingPathComponent("projects/-Users-dev-older")
+        try FileManager.default.createDirectory(at: dupDir, withIntermediateDirectories: true)
+        let dup = dupDir.appendingPathComponent("\(Fixtures.s08cb).jsonl").path
+        try FileManager.default.copyItem(atPath: winner, toPath: dup)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_790_900_000)], ofItemAtPath: dup)
+        let h = try EngineHarness(root: root, alive: [])
+        defer { h.cleanup() }
+        await h.engine.loadInitial()
+        let realDup = FileIO.realPath(dup)
+        #expect(await h.engine.fileState(realDup) == nil)                 // the newer file wins
+        let mainTools = await h.engine.snapshot(Fixtures.s08cb)?.runs.first?.toolCallCount
+
+        try FileManager.default.removeItem(atPath: winner)
+        await h.engine.handle([FSChange(path: winner)])
+        h.clock.advance(by: .seconds(3))                                     // past the removal grace
+        await h.engine.timerFired()
+        #expect(await h.engine.fileState(realDup) != nil)
+        #expect(await h.engine.snapshot(Fixtures.s08cb)?.runs.first?.toolCallCount == mainTools)
+        // It is now the live file: growth is read.
+        try Self.append(Data((SessionReducerTests.prompt("from the copy", ts: "2026-10-02T23:59:58.000Z") + "\n").utf8), to: dup)
+        await h.engine.handle([FSChange(path: dup)])
+        #expect(await h.engine.snapshot(Fixtures.s08cb)?.runs.first?.prompt == "from the copy")
+    }
+
+    /// #4: an exact duration after a fallback finish (same outcome) rewrites the row and replaces the sample.
+    @Test func exactDurationAfterFallbackFinishIsRecorded() async throws {
+        let h = try EngineHarness(alive: [])
+        defer { h.cleanup() }
+        await h.engine.loadInitial()
+        let main = h.path(Self.relativeMain(Fixtures.s08cb))
+        let subDir = String(main.dropLast(6)) + "/subagents"
+        try Self.append(Data((SessionReducerTests.agentCall(id: "toolu_EX", ts: "2026-10-02T23:50:00.000Z", type: "Plan", background: true) + "\n").utf8), to: main)
+        SessionReducerTests.writeMeta(AgentMetaJSON(type: "Plan", toolUseID: "toolu_EX"), to: subDir + "/agent-ex1.meta.json")
+        let handback = #"{"type":"user","agentId":"ex1","isSidechain":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t-h","content":"ok"}]},"toolEndsTurn":true,"timestamp":"2026-10-02T23:50:11.000Z"}"#
+        try Self.append(Data((SessionReducerTests.subagentLine("ex1", ts: "2026-10-02T23:50:01.000Z") + "\n" + handback + "\n").utf8),
+                        to: subDir + "/agent-ex1.jsonl")
+        await h.engine.handle([FSChange(path: main), FSChange(path: subDir + "/agent-ex1.meta.json"), FSChange(path: subDir + "/agent-ex1.jsonl")])
+        #expect(await h.engine.snapshot(Fixtures.s08cb)?.run("toolu_EX")?.status == .done)   // fallback: 10 s
+        #expect(await h.engine.currentEstimator.sampleCount(agentType: "Plan") == 1)
+
+        let notice = #"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-10-02T23:50:30.000Z","content":"<task-notification>\n<task-id>ex1</task-id>\n<tool-use-id>toolu_EX</tool-use-id>\n<status>completed</status>\n<usage><duration_ms>29500</duration_ms></usage>\n</task-notification>"}"#
+        try Self.append(Data((notice + "\n").utf8), to: main)
+        await h.engine.handle([FSChange(path: main)])
+        #expect(await h.engine.snapshot(Fixtures.s08cb)?.run("toolu_EX")?.status == .done)
+        #expect(await h.engine.currentEstimator.sampleCount(agentType: "Plan") == 1)         // replaced, not added
+        // Plan default 120 s; one 29.5 s sample: (29.5 + 120) / 2.
+        #expect(await h.engine.currentEstimator.estimate(agentType: "Plan", family: .other).seconds == (29.5 + 120) / 2)
+        await h.history.flush()
+        let row = await h.history.loadSampleRows(perTypeLimit: 50).first { $0.toolUseID == "toolu_EX" }
+        #expect(row?.sample.seconds == 29.5)
+    }
+
+    /// #5: a sample both in the reloaded DB rows and taken live during the reload counts once.
+    @Test func reloadCountsALiveSampleOnce() async throws {
+        let h = try EngineHarness(alive: [])
+        defer { h.cleanup() }
+        await h.engine.loadInitial()
+        await h.engine.reloadEstimator()
+        let before = await h.engine.currentEstimator.sampleCount(agentType: "Explore")
+
+        // A run finishes after the reload's flush, and its row reaches the DB before the reload reads it:
+        // it is both in the loaded rows and in the samples taken during the reload.
+        let main = h.path(Self.relativeMain(Fixtures.s08cb))
+        let lines = [SessionReducerTests.agentCall(id: "toolu_RACE", ts: "2026-10-02T23:59:01.000Z"),
+                     #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_RACE","content":"x"}]},"toolUseResult":{"status":"completed","agentId":"race1","agentType":"Explore","totalDurationMs":12000},"timestamp":"2026-10-02T23:59:13.100Z"}"#]
+        try Self.append(Data((lines.joined(separator: "\n") + "\n").utf8), to: main)
+        let engine = h.engine, history = h.history
+        await engine.reloadEstimator(afterFlush: {
+            await engine.handle([FSChange(path: main)])
+            _ = await engine.snapshot(Fixtures.s08cb)
+            await history.flush()
+        })
+        let raced = await history.loadSampleRows(perTypeLimit: 50).filter { $0.toolUseID == "toolu_RACE" }
+        #expect(raced.count == 1)
+        #expect(await h.engine.currentEstimator.sampleCount(agentType: "Explore") == before + 1)
+        await h.engine.reloadEstimator()
+        #expect(await h.engine.currentEstimator.sampleCount(agentType: "Explore") == before + 1)
+
+        // The merge itself: DB rows plus samples taken during the reload, keyed by tool-use id.
+        let sample = DurationSample(agentType: "Explore", family: .haiku, seconds: 42, endedAt: Fixtures.now)
+        let newer = DurationSample(agentType: "Explore", family: .haiku, seconds: 40, endedAt: Fixtures.now)
+        await h.engine.setEstimatorSamples([("toolu_R1", sample), ("toolu_R2", sample), ("toolu_R1", newer)])
+        #expect(await h.engine.currentEstimator.sampleCount(agentType: "Explore") == 2)
+        #expect(await h.engine.estimatorSamples["toolu_R1"] == newer)
+    }
+
+    /// #6: a session that leaves the window frees its in-memory state and isn't re-read until it changes.
+    @Test func sessionLeavingTheWindowFreesItsState() async throws {
+        let h = try EngineHarness(alive: [], historyWindow: 3 * 3600)
+        defer { h.cleanup() }
+        await h.engine.loadInitial()
+        let main = h.path(Self.relativeMain(Fixtures.s08cb))
+        let sub = (String(main.dropLast(6)) as NSString).appendingPathComponent("subagents/agent-a140524516f2ac0a4.jsonl")
+        #expect(await h.engine.sessionState(Fixtures.s08cb) != nil)
+        #expect(await h.engine.fileState(FileIO.realPath(main)) != nil)
+
+        h.clock.advance(to: Timestamp.parse("2026-10-03T00:25:00Z")!)        // 08cb ended 21:24:42Z
+        #expect(await h.engine.snapshot(Fixtures.s08cb) == nil)
+        #expect(await h.engine.sessionState(Fixtures.s08cb) == nil)
+        #expect(await h.engine.fileState(FileIO.realPath(main)) == nil)
+        #expect(await h.engine.fileState(FileIO.realPath(sub)) == nil)
+        #expect(await h.engine.lastStatus[Fixtures.s08cb] == nil)
+        #expect(await h.engine.recordedRuns["toolu_014VmCt9hdrzPCCUfBoz8GxZ"] == nil)
+        #expect(await h.engine.sessionFiles[Fixtures.s08cb] == nil)
+
+        // An unchanged file isn't re-read by a full sweep or an event.
+        await h.engine.sweep(full: true)
+        await h.engine.handle([FSChange(path: main)])
+        #expect(await h.engine.sessionState(Fixtures.s08cb) == nil)
+        // New activity brings it back (a resumed session).
+        try Self.append(Data((SessionReducerTests.prompt("back", ts: "2026-10-03T00:24:59.000Z") + "\n").utf8), to: main)
+        await h.engine.handle([FSChange(path: main)])
+        #expect(await h.engine.snapshot(Fixtures.s08cb)?.status == .running)
+        #expect(await h.engine.snapshot(Fixtures.s08cb)?.subagents.count == 2)
+    }
+
     @Test func liveFinishAddsOneSampleAndRedirtiesRunningRuns() async throws {
         let h = try EngineHarness(alive: [])
         defer { h.cleanup() }
@@ -627,9 +863,11 @@ import Testing
 /// A second engine over the first harness's files and history store.
 struct EngineHarnessSharingHistory {
     let engine: TranscriptEngine
-    init(_ first: EngineHarness) {
+    let probe: FakeProbe
+    init(_ first: EngineHarness, alive: Set<Int32> = []) {
+        probe = FakeProbe(alive: alive)
         engine = TranscriptEngine(configuration: first.configuration,
-                                  environment: CoreEnvironment(clock: TestClock(now: first.clock.now()), probe: FakeProbe(),
+                                  environment: CoreEnvironment(clock: TestClock(now: first.clock.now()), probe: probe,
                                                                history: first.history, watchFileSystem: false,
                                                                runsEstimateScan: false))
     }
