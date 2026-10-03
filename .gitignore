@@ -1,0 +1,9 @@
+.DS_Store
+/build/
+/DerivedData/
+AgentDeckCore/.build/
+AgentDeckCore/.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.trace
+/profiles/
