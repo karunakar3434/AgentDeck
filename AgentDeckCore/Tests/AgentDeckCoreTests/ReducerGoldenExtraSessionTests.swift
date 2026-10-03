@@ -289,14 +289,14 @@ import Testing
     @Test func bashTaskNoticesNeverTouchAgentRuns() {
         var s = Extra.reduced
         let before = s.runs
-        #expect(Set(s.pendingNotices.keys) == ["bter9wanp", "b7m0ifs3j"])
-        #expect(s.pendingNotices["b7m0ifs3j"]?.count == 1)          // main file and subagent file: held once
+        // Held while the main file is read; dropped once the subagent files show their Bash calls.
+        #expect(s.pendingNotices.isEmpty)
         let bash = Extra.mainLines.filter { RawLine.string($0).contains(#"<task-id>b"#) && Ref.json($0)["operation"] as? String == "enqueue" }
         #expect(bash.count == 2)
         fold(bash + bash, owner: .main, into: &s)
         #expect(s.runs == before)
         #expect(s.order == Extra.agentCallIDs)
-        #expect(Set(s.pendingNotices.keys) == ["bter9wanp", "b7m0ifs3j"])
+        #expect(s.pendingNotices.isEmpty)                            // known Bash calls: never held
     }
 
     @Test func repeatedDeliveryIsAppliedOnce() throws {

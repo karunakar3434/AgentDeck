@@ -167,7 +167,10 @@ final class TaskModel: Identifiable {
     var subagents: ArraySlice<RunModel> { runs.dropFirst() }
 
     private static func families(_ s: TaskSnapshot) -> [ModelFamily] {
-        Array(Set(s.runs.map { $0.model.id == nil ? s.mainModel.family : $0.model.family })).sorted()
+        var set = Set<ModelFamily>()
+        let main = FamilyCache.family(s.mainModel.id)
+        for r in s.runs { set.insert(r.model.id == nil ? main : FamilyCache.family(r.model.id)) }
+        return set.sorted()
     }
 
     func elapsed(at now: Date) -> TimeInterval { max(0, (endedAt ?? now).timeIntervalSince(startedAt)) }

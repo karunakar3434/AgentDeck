@@ -7,6 +7,7 @@ struct Sidebar: View {
 
     var body: some View {
         @Bindable var nav = nav
+        if Experiments.has("nosidebar") { Color.clear } else {
         List(selection: Binding<SidebarSection?>(
             get: { nav.section },
             set: { if let s = $0 { nav.show(s) } }
@@ -36,6 +37,7 @@ struct Sidebar: View {
         .listStyle(.sidebar)
         .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 300)
         .animation(Theme.spring, value: store.projects)
+        }
     }
 }
 

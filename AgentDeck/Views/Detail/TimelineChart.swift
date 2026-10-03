@@ -95,6 +95,6 @@ struct TimelineChart: View {
             }
         }
         .frame(height: max(80, CGFloat(bars.count) * 24 + 40))
-        .animation(.linear(duration: 0.9), value: now)
+        .drawingGroup()
     }
 }

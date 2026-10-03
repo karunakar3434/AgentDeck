@@ -125,6 +125,37 @@ import Testing
         #expect(parser.parse(lines[142]) == nil)
     }
 
+    @Test func onlyTextThatIsANotificationCarriesNotices() {
+        let n = "<task-notification>\\n<task-id>a1</task-id>\\n<tool-use-id>toolu_1</tool-use-id>\\n<status>completed</status>\\n</task-notification>"
+        let quoted = #"Another Claude session sent a message:\n<agent-message from=\"a9\">"# + n + "</agent-message>"
+        // queue-operation: real vs quoted content
+        let qReal = #"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-10-02T23:00:00.000Z","content":"  \#(n)"}"#
+        let qQuoted = #"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-10-02T23:00:00.000Z","content":"\#(quoted)"}"#
+        guard case .notices(let a, _)? = parser.parse(Data(qReal.utf8)) else { Issue.record("real queue notice"); return }
+        #expect(a.first?.taskID == "a1")
+        #expect(parser.parse(Data(qQuoted.utf8)) == nil)
+        // queued_command: a peer handback quoting a notice is a report
+        let peer = #"{"parentUuid":"p","isSidechain":false,"attachment":{"type":"queued_command","prompt":"\#(n)","commandMode":"prompt","origin":{"kind":"peer","from":"a9","body":"\#(n)"},"isMeta":true},"type":"attachment","timestamp":"2026-10-02T23:00:01.000Z"}"#
+        guard case .peerReport(let from, _)? = parser.parse(Data(peer.utf8)) else { Issue.record("peer report"); return }
+        #expect(from == "a9")
+        // A peer delivery without a body: the message inside the wrapper.
+        let bare = #"{"parentUuid":"p","isSidechain":false,"attachment":{"type":"queued_command","prompt":"\#(quoted)","origin":{"kind":"peer","from":"a9"}},"type":"attachment","timestamp":"2026-10-02T23:00:01.000Z"}"#
+        guard case .peerReport(_, let text)? = parser.parse(Data(bare.utf8)) else { Issue.record("bare peer"); return }
+        #expect(text.hasPrefix("<task-notification>"))
+        #expect(!text.contains("agent-message"))
+        // user line: a human prompt that mentions a notice is a prompt
+        let human = #"{"parentUuid":"p","isSidechain":false,"type":"user","message":{"role":"user","content":"Why did this fail? \#(n)"},"origin":{"kind":"human"},"timestamp":"2026-10-02T23:00:02.000Z"}"#
+        guard case .user(let u)? = parser.parse(Data(human.utf8)) else { Issue.record("human"); return }
+        #expect(u.notices.isEmpty)
+        if case .prompt = u.kind {} else { Issue.record("not a prompt: \(u.kind)") }
+        // user line from a peer quoting a notice
+        let peerUser = #"{"parentUuid":"p","isSidechain":false,"type":"user","message":{"role":"user","content":"\#(quoted)"},"origin":{"kind":"peer","from":"a9"},"timestamp":"2026-10-02T23:00:03.000Z"}"#
+        guard case .user(let pu)? = parser.parse(Data(peerUser.utf8)) else { Issue.record("peer user"); return }
+        #expect(pu.kind == .peer)
+        #expect(pu.notices.isEmpty)
+        #expect(pu.peerReport?.agentID == "a9")
+    }
+
     @Test func toolEndsTurnOnHandbackResult() throws {
         let path = (Fixtures.subagentDir(Fixtures.s08cb) as NSString).appendingPathComponent("agent-a140524516f2ac0a4.jsonl")
         let last = try #require(Fixtures.lines(path).last)

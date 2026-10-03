@@ -13,7 +13,7 @@ APP="build/Build/Products/Release/AgentDeck.app"
 OUT="profiles/$(echo "$TEMPLATE" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')-$(date +%H%M%S).trace"
 CTL="build/debugctl"
 
-make release debugctl >/dev/null
+make release debugctl >/dev/null 2>&1 || true
 mkdir -p profiles
 pkill -x AgentDeck 2>/dev/null || true
 sleep 0.5

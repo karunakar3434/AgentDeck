@@ -640,25 +640,21 @@ struct LineShape: Sendable, CustomTestStringConvertible {
         let queueLine = try RawLine.replacing(#""content":"txt-7c5a7ecb""#, with: #""content":"# + Ref.literal(wrapped), in: Extra.mainLines[303])
         let attachmentLine = try RawLine.replacing(#""prompt":"txt-7c5a7ecb""#, with: #""prompt":"# + Ref.literal(wrapped), in: Extra.mainLines[312])
 
-        withKnownIssue("LineParser reads <task-notification> blocks out of peer messages: notices are checked before origin.kind == \"peer\" (queuedCommand), and queue-operation content isn't checked to be a notification") {
-            let event = parser.parse(attachmentLine)
-            guard case .peerReport(let from, _)? = event else {
-                Issue.record("peer attachment parsed as \(ParsedShape(event))")
-                return
-            }
+        let event = parser.parse(attachmentLine)
+        if case .peerReport(let from, _)? = event {
             #expect(from == "a2cb440a58ad617b7")
-            #expect(parser.parse(queueLine) == nil)
+        } else {
+            Issue.record("peer attachment parsed as \(ParsedShape(event))")
         }
+        #expect(parser.parse(queueLine) == nil)
 
-        // The quoted notice (usage in a non-tag form, so a different identity) overwrites af44's exact outcome:
-        // durationMs 186,693 is lost and the run's end moves from 23:59:56 to 00:07:34.
+        // The quoted notice (usage in a non-tag form, so a different identity) must not touch af44's exact
+        // outcome (durationMs 186,693, end 23:59:56).
         var s = Extra.reduced
         let before = try #require(s.runs["toolu_018qrqzL6FSeQxxoqveyoN5h"]?.exact)
         #expect(before.durationMs == 186_693)
         fold([queueLine, attachmentLine], owner: .main, into: &s)
-        withKnownIssue("A peer handback quoting another agent's notification re-finishes that agent") {
-            #expect(s.runs["toolu_018qrqzL6FSeQxxoqveyoN5h"]?.exact == before)
-        }
+        #expect(s.runs["toolu_018qrqzL6FSeQxxoqveyoN5h"]?.exact == before)
     }
 
     // MARK: Durations mode and paths

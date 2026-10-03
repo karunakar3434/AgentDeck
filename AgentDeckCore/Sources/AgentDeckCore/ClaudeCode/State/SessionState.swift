@@ -164,8 +164,13 @@ struct SessionState: Sendable {
     var orphans: [String: RunState] = [:]
     /// Local clock time each orphan was first seen (5 s grace before showing it).
     var orphanSince: [String: Date] = [:]
-    /// Notices whose run isn't known yet, by task id (bounded).
+    /// Notices whose run isn't known yet, by task id (bounded; oldest task id evicted first).
     var pendingNotices: [String: [PendingNotice]] = [:]
+    /// Task ids of `pendingNotices` in arrival order (FIFO eviction).
+    var pendingOrder: [String] = []
+    /// Tool-use ids of calls that can't start an agent (not Agent/Task/SendMessage): a notice carrying one
+    /// is a Bash/Monitor background task and is never held.
+    var plainToolUseIDs: Set<String> = []
     /// Meta sidecars applied, by agentId.
     var metas: [String: AgentMeta] = [:]
     /// Model resolution used agent definitions (re-dirty when they change).

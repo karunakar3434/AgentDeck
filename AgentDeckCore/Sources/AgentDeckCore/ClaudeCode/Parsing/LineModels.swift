@@ -282,7 +282,7 @@ struct AgentToolResult: Decodable, Sendable {
         agentID = c.lenient(String.self, .agentID)
         guard agentID != nil else { return }      // not an Agent result: decode nothing else
         status = c.lenient(String.self, .status)
-        agentType = c.lenient(String.self, .agentType)
+        agentType = c.lenient(String.self, .agentType).map { TextUtil.clamp($0, limit: TextUtil.fieldLimit) }
         resolvedModel = c.lenient(String.self, .resolvedModel)
         totalDurationMs = c.lenient(Int.self, .totalDurationMs)
         totalTokens = c.lenient(Int.self, .totalTokens)
@@ -433,12 +433,12 @@ struct AgentMeta: Decodable, Sendable, Equatable {
 
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        agentType = c.lenient(String.self, .agentType)
-        description = c.lenient(String.self, .description)
+        agentType = c.lenient(String.self, .agentType).map { TextUtil.clamp($0, limit: TextUtil.fieldLimit) }
+        description = c.lenient(String.self, .description).map { TextUtil.clamp($0, limit: TextUtil.fieldLimit) }
         toolUseID = c.lenient(String.self, .toolUseID)
         model = c.lenient(String.self, .model)
         isFork = c.lenient(Bool.self, .isFork)
-        name = c.lenient(String.self, .name)
+        name = c.lenient(String.self, .name).map { TextUtil.clamp($0, limit: TextUtil.fieldLimit) }
         requestShape = c.lenient(String.self, .requestShape)
     }
 
@@ -518,6 +518,8 @@ enum TextUtil {
     }
 
     static let reportLimit = 400
+    /// Short identifying fields: Agent `description` / `subagent_type`, meta `agentType` / `description` / `name`.
+    static let fieldLimit = 300
 
     /// A result/report text for `resultSummary`: whitespace collapsed, ≤ 400 chars; nil when empty, a bare
     /// ellipsis, or a delivery stub ("This agent's report was delivered…", "Async agent launched…").

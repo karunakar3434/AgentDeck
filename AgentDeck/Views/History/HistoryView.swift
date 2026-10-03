@@ -111,6 +111,7 @@ private struct HistoryRow: View {
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 6)
+        .drawingGroup()
         .background(isHighlighted ? Color.accentColor.opacity(0.12) : .clear, in: .rect(cornerRadius: 8))
     }
 }

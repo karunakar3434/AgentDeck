@@ -15,6 +15,12 @@ from collections import Counter, defaultdict
 path = sys.argv[1]
 proc = sys.argv[2] if len(sys.argv) > 2 else "AgentDeck"
 top = int(sys.argv[3]) if len(sys.argv) > 3 else 25
+# Optional time windows in seconds: "21.6-24.4,31.0-34.7"
+windows = []
+if len(sys.argv) > 4:
+    for w in sys.argv[4].split(","):
+        a, b = w.split("-")
+        windows.append((float(a) * 1e9, float(b) * 1e9))
 
 ids = {}           # id -> element (for ref resolution)
 frame_name = {}    # frame id -> (name, binary)
@@ -35,6 +41,11 @@ for event, el in ET.iterparse(path, events=("end",)):
         ids[el.get("id")] = el
     if el.tag != "row":
         continue
+    if windows:
+        t_el = resolve(el.find("sample-time"))
+        t = int(t_el.text or 0)
+        if not any(a <= t <= b for a, b in windows):
+            el.clear(); continue
     thread = resolve(el.find("thread"))
     tname = thread.get("fmt", "?")
     if proc not in tname:

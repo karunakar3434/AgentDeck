@@ -10,6 +10,8 @@ enum SessionReducer {
     /// Pending notices kept per session (task ids), oldest dropped first.
     static let pendingNoticeLimit = 32
     static let interactiveTools: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
+    /// Tools whose tool-use id can appear on an agent's notification (an Agent call, or a SendMessage resume).
+    static let agentTools: Set<String> = ["Agent", "Task", "SendMessage"]
 
     // MARK: Transcript lines
 
@@ -59,6 +61,7 @@ enum SessionReducer {
         let ts = e.context.timestamp
         envelope(e.context, owner: owner, &s)
         var calls: [ToolUse] = []
+        var plainTools: [String] = []
         let (ownerID, ownerDepth) = withOwner(owner, &s, now: now) { r -> (String, Int) in
             ownLine(&r, ts, owner: owner)
             if let model = e.model { r.own.transcriptModel = model }
@@ -95,6 +98,7 @@ enum SessionReducer {
                     if interactiveTools.contains(t.name) { r.own.interactivePending.insert(t.id) }
                     if let report = t.handbackMessage { r.own.handbackReport = report }
                     if t.agentCall != nil { calls.append(t) }
+                    if !agentTools.contains(t.name) { plainTools.append(t.id) }
                 case .text:
                     // Subagent fallback finish: a final text block with end_turn (older versions set it).
                     if owner != .main, e.stopReason == "end_turn", let ts {
@@ -108,6 +112,9 @@ enum SessionReducer {
                 r.own.phase = .ended(.normal)
             }
             return (r.id, r.depth)
+        }
+        for id in plainTools where s.plainToolUseIDs.insert(id).inserted {
+            dropPendingNotices(toolUseID: id, in: &s)     // a Bash/Monitor notice that arrived before its call
         }
         for t in calls {
             guard let call = t.agentCall, s.runs[t.id] == nil else { continue }
@@ -252,18 +259,37 @@ enum SessionReducer {
     }
 
     private static func holdNotice(_ n: TaskNotice, at ts: Date?, taskID: String, in s: inout SessionState) {
+        // A background Bash/Monitor task: its tool-use id is a known non-agent call. Never an agent's.
+        if let tuid = n.toolUseID, s.plainToolUseIDs.contains(tuid) { return }
         var list = s.pendingNotices[taskID] ?? []
         guard !list.contains(where: { $0.notice.identity == n.identity }) else { return }
+        if list.isEmpty { s.pendingOrder.append(taskID) }
         list.append(.init(notice: n, at: ts))
         s.pendingNotices[taskID] = list
-        if s.pendingNotices.count > pendingNoticeLimit, let drop = s.pendingNotices.keys.first(where: { $0 != taskID }) {
-            s.pendingNotices[drop] = nil
+        while s.pendingOrder.count > pendingNoticeLimit {
+            s.pendingNotices[s.pendingOrder.removeFirst()] = nil      // oldest first
         }
     }
 
     private static func flushPendingNotices(for agentID: String, in s: inout SessionState) {
         guard let list = s.pendingNotices.removeValue(forKey: agentID) else { return }
+        s.pendingOrder.removeAll { $0 == agentID }
         for p in list { applyNotice(p.notice, at: p.at, to: &s) }
+    }
+
+    /// Forgets held notices that carry `toolUseID` (it turned out to be a plain tool call).
+    private static func dropPendingNotices(toolUseID: String, in s: inout SessionState) {
+        guard !s.pendingNotices.isEmpty else { return }
+        for (taskID, list) in s.pendingNotices {
+            let kept = list.filter { $0.notice.toolUseID != toolUseID }
+            guard kept.count != list.count else { continue }
+            if kept.isEmpty {
+                s.pendingNotices[taskID] = nil
+                s.pendingOrder.removeAll { $0 == taskID }
+            } else {
+                s.pendingNotices[taskID] = kept
+            }
+        }
     }
 
     /// `startedAt + duration`, unless that is after the signal or more than 60 s before it (a resumed run,

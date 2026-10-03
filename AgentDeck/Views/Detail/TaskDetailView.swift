@@ -13,12 +13,16 @@ struct TaskDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
-                section("Agents", symbol: "person.3.sequence.fill") {
-                    AgentTree(task: task)
+                if !Experiments.has("notree") {
+                    section("Agents", symbol: "person.3.sequence.fill") {
+                        AgentTree(task: task)
+                    }
                 }
-                section("Timeline", symbol: "chart.bar.xaxis") {
-                    TimelineChart(task: task)
-                        .padding(.top, 6)
+                if !Experiments.has("nochart") {
+                    section("Timeline", symbol: "chart.bar.xaxis") {
+                        TimelineChart(task: task)
+                            .padding(.top, 6)
+                    }
                 }
             }
             .padding(18)

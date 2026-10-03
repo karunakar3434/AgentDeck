@@ -24,10 +24,18 @@ final class DeckStore {
 
     // Header-strip aggregates.
     private(set) var runningAgentCount = 0
+    /// `runningAgentCount` throttled to at most two changes a second, for the menu bar item,
+    /// Dock badge and window subtitle: AppKit re-lays out the status item and title bar on
+    /// every change, which is expensive when hundreds of agents churn.
+    private(set) var glanceRunningCount = 0
+    @ObservationIgnored private var glancePublishedAt = Date.distantPast
+    @ObservationIgnored private var glancePending = false
     private(set) var modelsInUse: [ModelFamily] = []
 
     /// Called when a task finishes or a subagent fails (for notifications).
     var onEvent: ((DeckEvent) -> Void)?
+    /// Called when `glanceRunningCount` changes (Dock badge).
+    @ObservationIgnored var onGlanceChange: ((Int) -> Void)?
 
     func task(_ id: String) -> TaskModel? { tasks[id] }
     func run(_ id: String) -> RunModel? { runs[id] }
@@ -45,6 +53,7 @@ final class DeckStore {
         projects = []
         agentTypes = []
         runningAgentCount = 0
+        glanceRunningCount = 0
         modelsInUse = []
         lastFinishedAt = nil
         initialLoadComplete = false
@@ -139,17 +148,37 @@ final class DeckStore {
             if !r.isMain { types.insert(r.agentType) }
             if r.status == .running {
                 running.append(r)
-                let fam = r.model.id == nil ? (tasks[r.taskID]?.mainModel.family ?? .other) : r.model.family
+                let fam = r.model.id == nil ? FamilyCache.family(tasks[r.taskID]?.mainModel.id) : FamilyCache.family(r.model.id)
                 families.insert(fam)
             }
         }
         running.sort { ($0.startedAt, $0.id) < ($1.startedAt, $1.id) }
         setIfChanged(\.runningRunIDs, running.map(\.id))
         setIfChanged(\.runningAgentCount, running.count)
+        scheduleGlanceUpdate()
         setIfChanged(\.modelsInUse, families.sorted())
         setIfChanged(\.agentTypes, types.sorted())
         let last = inactive.compactMap { $0.endedAt ?? $0.lastActivityAt }.max()
         setIfChanged(\.lastFinishedAt, last)
+    }
+
+    private func scheduleGlanceUpdate() {
+        guard glanceRunningCount != runningAgentCount, !glancePending else { return }
+        let wait = 0.5 - Date().timeIntervalSince(glancePublishedAt)
+        if wait <= 0 { publishGlance(); return }
+        glancePending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            guard let self else { return }
+            glancePending = false
+            publishGlance()
+        }
+    }
+
+    private func publishGlance() {
+        glancePublishedAt = Date()
+        guard glanceRunningCount != runningAgentCount else { return }
+        glanceRunningCount = runningAgentCount
+        onGlanceChange?(glanceRunningCount)
     }
 
     private func setIfChanged<V: Equatable>(_ kp: ReferenceWritableKeyPath<DeckStore, V>, _ v: V) {
@@ -160,4 +189,19 @@ final class DeckStore {
 enum DeckEvent {
     case taskFinished(taskID: String, failed: Bool)
     case subagentFailed(taskID: String, runID: String)
+}
+
+/// Memoized `ModelFamily(modelID:)`: there are only a handful of distinct model ids,
+/// and resolving one lowercases and scans the string.
+@MainActor
+enum FamilyCache {
+    private static var cache: [String: ModelFamily] = [:]
+
+    static func family(_ id: String?) -> ModelFamily {
+        guard let id else { return .other }
+        if let f = cache[id] { return f }
+        let f = ModelFamily(modelID: id)
+        cache[id] = f
+        return f
+    }
 }

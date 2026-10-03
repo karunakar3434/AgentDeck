@@ -158,18 +158,24 @@ struct LineParser {
                   let line = decode(QueueOperationLine.self, bytes), line.operation == "enqueue",
                   let content = line.content
             else { return nil }
-            let notices = TaskNotice.parseAll(content)
+            // Only a queued notification, not a queued message that quotes one (a peer handback).
+            let notices = TaskNotice.parseLeading(content)
             return notices.isEmpty ? nil : .notices(notices, timestamp: line.timestamp.flatMap(Timestamp.parse))
         case .queuedCommand:
             guard let line = decode(QueuedCommandLine.self, bytes), let prompt = line.prompt else { return nil }
             let ts = line.timestamp.flatMap(Timestamp.parse)
-            let notices = TaskNotice.parseAll(prompt)
-            if !notices.isEmpty { return .notices(notices, timestamp: ts) }
-            guard mode == .full else { return nil }
-            if line.origin?.kind == "peer" {
-                guard let from = line.origin?.from, let report = (line.origin?.body).flatMap(TextUtil.report) else { return nil }
+            let kind = line.origin?.kind
+            if kind == "peer" {
+                // A subagent's handback: a report, never a notification (even when it quotes one).
+                guard mode == .full, let from = line.origin?.from,
+                      let report = TextUtil.report(line.origin?.body ?? Self.peerMessageBody(prompt)) else { return nil }
                 return .peerReport(agentID: from, text: report)
             }
+            if kind == nil || kind == "task-notification" {
+                let notices = TaskNotice.parseLeading(prompt)
+                if !notices.isEmpty { return .notices(notices, timestamp: ts) }
+            }
+            guard mode == .full else { return nil }
             let human = line.origin == nil || line.origin?.kind == "human"
             if human, !line.isMeta, line.commandMode == nil || line.commandMode == "prompt" {
                 return .queuedPrompt(TextUtil.cap(prompt, bytes: Self.promptLimit), timestamp: ts)
@@ -238,7 +244,8 @@ struct LineParser {
                 let input = block.input ?? ToolInput()
                 var call: AgentCall?
                 if name == "Agent" || name == "Task" {
-                    call = AgentCall(subagentType: input.subagentType, description: input.description,
+                    call = AgentCall(subagentType: input.subagentType.map { TextUtil.clamp($0, limit: TextUtil.fieldLimit) },
+                                     description: input.description.map { TextUtil.clamp($0, limit: TextUtil.fieldLimit) },
                                      prompt: input.prompt.map { TextUtil.cap($0, bytes: promptLimit) },
                                      model: input.model, runInBackground: input.runInBackground)
                 }
@@ -290,24 +297,26 @@ struct LineParser {
         }
 
         var event = UserEvent(context: ctx, kind: .meta, toolResults: results, toolEndsTurn: line.toolEndsTurn)
-        let notices = text.map(TaskNotice.parseAll) ?? []
         if !results.isEmpty {
             event.kind = .toolResults
             if let text, text.hasPrefix("[Request interrupted by user") { event.kind = .interrupt }
             return event
         }
         guard let text else { return event }
+        // Only a turn that *is* a notification carries notices; a peer message quoting one doesn't.
+        let notificationOrigin = line.originKind == nil || line.originKind == "task-notification"
+        let notices = notificationOrigin ? TaskNotice.parseLeading(text) : []
         if text.hasPrefix("[Request interrupted by user") {
             event.kind = .interrupt
-        } else if line.originKind == "task-notification" || !notices.isEmpty {
-            event.kind = .notification
-            event.notices = notices
         } else if line.originKind == "peer" {
             event.kind = .peer
-            let body: String = line.originBody ?? text
+            let body: String = line.originBody ?? peerMessageBody(text)
             if let from = line.originFrom, let report = TextUtil.report(body) {
                 event.peerReport = (from, report)
             }
+        } else if line.originKind == "task-notification" || !notices.isEmpty {
+            event.kind = .notification
+            event.notices = notices
         } else if line.isMeta || line.isCompactSummary || (line.originKind != nil && line.originKind != "human")
                     || isCommandText(text) {
             event.kind = .meta
@@ -315,6 +324,17 @@ struct LineParser {
             event.kind = .prompt(TextUtil.cap(text, bytes: promptLimit))
         }
         return event
+    }
+
+    /// The message inside a peer delivery ("Another Claude session sent a message:
+    /// <agent-message from=…>…</agent-message>"), or the text itself when it has no such wrapper.
+    static func peerMessageBody(_ text: String) -> String {
+        guard let open = text.range(of: "<agent-message"),
+              let close = text[open.upperBound...].firstIndex(of: ">") else { return text }
+        let start = text.index(after: close)
+        let end = text.range(of: "</agent-message>", options: .backwards, range: start..<text.endIndex)?.lowerBound
+            ?? text.endIndex
+        return String(text[start..<end])
     }
 
     /// Slash-command echoes and local command output are recorded as user lines but aren't prompts.

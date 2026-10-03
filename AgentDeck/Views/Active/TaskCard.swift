@@ -54,6 +54,9 @@ struct TaskCard: View {
             }
         }
         .padding(14)
+        // Rasterize the card's content on the GPU: on macOS SwiftUI otherwise redraws the
+        // whole card layer on the CPU whenever any timer text in it changes.
+        .drawingGroup()
         .background {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(.background.secondary)
@@ -74,21 +77,18 @@ struct TaskCard: View {
     }
 }
 
-/// As many agent avatars as fit (up to 12), then "+N".
+/// As many agent avatars as fit (up to 12), then "+N". The count comes from the measured
+/// width, so there's a single row to update (no ViewThatFits candidates).
 struct AvatarStack: View {
     var task: TaskModel
+    @State private var fit = 12
+
+    private static let step: CGFloat = 18      // 22pt avatar overlapped by 4pt
+    private static let moreWidth: CGFloat = 36
 
     var body: some View {
         let runs = task.runs
-        ViewThatFits(in: .horizontal) {
-            ForEach([12, 9, 6, 4], id: \.self) { limit in
-                row(runs, limit: limit)
-            }
-        }
-        .animation(Theme.spring, value: task.runIDs)
-    }
-
-    private func row(_ runs: [RunModel], limit: Int) -> some View {
+        let limit = runs.count > fit ? max(1, fit - 1) : fit
         HStack(spacing: -4) {
             ForEach(runs.prefix(limit)) { run in
                 AgentAvatar(run: run, size: 22, pulsing: false)
@@ -103,6 +103,12 @@ struct AvatarStack: View {
                     .padding(.leading, 8)
             }
         }
-        .fixedSize()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: Int.self) { proxy in
+            Int((proxy.size.width - Self.moreWidth + 4) / Self.step)
+        } action: { n in
+            fit = min(12, max(2, n))
+        }
+        .animation(Theme.spring, value: task.runIDs)
     }
 }

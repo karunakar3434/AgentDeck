@@ -99,6 +99,7 @@ struct AgentRow: View {
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
+        .drawingGroup()
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.16) : (hovering ? Color.primary.opacity(0.05) : .clear))

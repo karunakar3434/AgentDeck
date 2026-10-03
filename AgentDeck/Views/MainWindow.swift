@@ -51,8 +51,9 @@ struct MainWindow: View {
     }
 
     private var subtitle: String {
+        if Experiments.has("nosubtitle") { return "" }
         if app.isMock { return "Simulated agents" }
-        let n = store.runningAgentCount
+        let n = store.glanceRunningCount
         return n == 0 ? "No agents running" : "\(n) agent\(n == 1 ? "" : "s") running"
     }
 }
@@ -86,6 +87,7 @@ private struct DetailContainer: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .pulseHost()
         .focusable()
         .focusEffectDisabled()
         .focused($focused)

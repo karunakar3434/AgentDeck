@@ -25,6 +25,7 @@ final class AppModel {
         ReduceMotion.startObserving()
         notifications.activate()
         notifications.onOpenTask = { [weak self] id in self?.openFromNotification(id) }
+        store.onGlanceChange = { [weak self] _ in self?.updateDockBadge() }
         store.onEvent = { [weak self] event in
             guard let self else { return }
             notifications.handle(event, store: store)
@@ -69,7 +70,6 @@ final class AppModel {
             for await update in await new.updates() {
                 if Task.isCancelled { break }
                 store.apply(update)
-                self?.updateDockBadge()
             }
         }
     }
@@ -77,7 +77,7 @@ final class AppModel {
     private var lastBadge: Int = -1
 
     private func updateDockBadge() {
-        let n = UserDefaults.standard.bool(forKey: SettingsKey.dockBadge) ? store.runningAgentCount : 0
+        let n = UserDefaults.standard.bool(forKey: SettingsKey.dockBadge) && !Experiments.has("nodock") ? store.glanceRunningCount : 0
         guard n != lastBadge else { return }
         lastBadge = n
         NSApp.dockTile.badgeLabel = n > 0 ? "\(n)" : nil

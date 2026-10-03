@@ -8,7 +8,9 @@ struct InspectorView: View {
 
     var body: some View {
         Group {
-            if let id = nav.inspectedRunID, let run = store.runs[id] {
+            if Experiments.has("noinspector") {
+                Color.clear
+            } else if let id = nav.inspectedRunID, let run = store.runs[id] {
                 RunInspector(run: run)
                     .id(id)
                     .transition(.opacity)
@@ -115,6 +117,7 @@ private struct RunInspector: View {
             .font(.caption.monospacedDigit())
         }
         .padding(12)
+        .drawingGroup()
         .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 12))
     }
 
@@ -202,6 +205,7 @@ private struct ToolRow: View {
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
+        .drawingGroup()
         .background(Color.primary.opacity(0.045), in: .rect(cornerRadius: 6))
     }
 

@@ -337,6 +337,92 @@ import Testing
         #expect(SnapshotBuilder.projectName("/Users/dev/localbiz") == "localbiz")
     }
 
+    // MARK: Held notices
+
+    static func notice(task: String, toolUse: String, ts: String) -> String {
+        #"{"type":"queue-operation","operation":"enqueue","timestamp":"\#(ts)","content":"<task-notification>\n<task-id>\#(task)</task-id>\n<tool-use-id>\#(toolUse)</tool-use-id>\n<status>completed</status>\n<summary>Background command \"x\" finished</summary>\n</task-notification>"}"#
+    }
+
+    static func toolCall(_ name: String, id: String, ts: String, input: String = #"{"command":"sleep 60","run_in_background":true}"#) -> String {
+        #"{"parentUuid":"p","isSidechain":false,"message":{"model":"claude-opus-5-5","id":"m-\#(id)","content":[{"type":"tool_use","id":"\#(id)","name":"\#(name)","input":\#(input)}],"stop_reason":"tool_use"},"type":"assistant","timestamp":"\#(ts)"}"#
+    }
+
+    @Test func bashNoticesForKnownCallsAreNeverHeld() {
+        var s = SessionState(id: "s1")
+        apply([Self.toolCall("Bash", id: "toolu_BASH", ts: "2026-10-02T23:00:00.000Z"),
+               Self.notice(task: "b1234abcd", toolUse: "toolu_BASH", ts: "2026-10-02T23:01:00.000Z")], owner: .main, to: &s)
+        #expect(s.pendingNotices.isEmpty)
+        #expect(s.pendingOrder.isEmpty)
+    }
+
+    @Test func noticeHeldBeforeItsBashCallIsDroppedWhenTheCallAppears() {
+        // Cold-load order: the notice is in the main file, the Bash call in a subagent's file read later.
+        var s = SessionState(id: "s1")
+        apply([Self.notice(task: "bter9wanp", toolUse: "toolu_SUBBASH", ts: "2026-10-02T23:01:00.000Z"),
+               Self.notice(task: "aagent1", toolUse: "toolu_AGENTCALL", ts: "2026-10-02T23:01:01.000Z")], owner: .main, to: &s)
+        #expect(Set(s.pendingNotices.keys) == ["bter9wanp", "aagent1"])
+        apply([Self.toolCall("Bash", id: "toolu_SUBBASH", ts: "2026-10-02T23:00:00.000Z")], owner: .agent("sub1"), to: &s)
+        #expect(Set(s.pendingNotices.keys) == ["aagent1"])
+        #expect(s.pendingOrder == ["aagent1"])
+    }
+
+    @Test func sendMessageNoticesAreStillHeldForTheirAgent() {
+        // A resumed agent's notice carries the SendMessage call's id: it must wait for the agent's run.
+        var s = SessionState(id: "s1")
+        apply([Self.toolCall("SendMessage", id: "toolu_SEND", ts: "2026-10-02T23:00:00.000Z", input: #"{"to":"x","message":"go"}"#),
+               Self.notice(task: "aforky", toolUse: "toolu_SEND", ts: "2026-10-02T23:05:00.000Z")], owner: .main, to: &s)
+        #expect(s.pendingNotices["aforky"]?.count == 1)
+        SessionReducer.applyMeta(AgentMeta(agentType: "fork", isFork: true), agentID: "aforky", to: &s, now: Fixtures.now)
+        #expect(s.pendingNotices.isEmpty)
+        #expect(s.runs["agent:aforky"]?.exact?.status == .done)
+    }
+
+    @Test func heldNoticesAreEvictedOldestFirst() {
+        var s = SessionState(id: "s1")
+        let lines = (0..<40).map { i in
+            Self.notice(task: "aunknown\(i)", toolUse: "toolu_unknown\(i)", ts: "2026-10-02T23:00:\(String(format: "%02d", i)).000Z")
+        }
+        apply(lines + lines, owner: .main, to: &s)
+        #expect(s.pendingNotices.count == SessionReducer.pendingNoticeLimit)
+        #expect(s.pendingOrder == (8..<40).map { "aunknown\($0)" })
+        #expect(Set(s.pendingNotices.keys) == Set(s.pendingOrder))
+        #expect(s.pendingNotices.values.allSatisfy { $0.count == 1 })
+        // Applying a held notice removes it from the order too.
+        apply([Self.agentCall(id: "toolu_unknown20", ts: "2026-10-02T22:59:00.000Z", background: true)], owner: .main, to: &s)
+        SessionReducer.applyMeta(AgentMeta(agentType: "Explore", toolUseID: "toolu_unknown20"), agentID: "aunknown20", to: &s, now: Fixtures.now)
+        #expect(s.pendingNotices["aunknown20"] == nil)
+        #expect(!s.pendingOrder.contains("aunknown20"))
+        #expect(s.runs["toolu_unknown20"]?.exact?.status == .done)
+    }
+
+    // MARK: Field caps
+
+    @Test func agentCallAndMetaFieldsAreCapped() throws {
+        let long = String(repeating: "d", count: 5000)
+        var s = SessionState(id: "s1")
+        s.mainSeen = true
+        let call = #"{"parentUuid":"p","isSidechain":false,"message":{"model":"claude-opus-5-5","id":"m1","content":[{"type":"tool_use","id":"toolu_LONG","name":"Agent","input":{"description":"\#(long)","subagent_type":"\#(long)","prompt":"p"}}],"stop_reason":"tool_use"},"type":"assistant","timestamp":"2026-10-02T23:00:00.000Z"}"#
+        apply([call], owner: .main, to: &s)
+        let run = try #require(s.runs["toolu_LONG"])
+        #expect(run.description.count == TextUtil.fieldLimit)
+        #expect(run.agentType.count == TextUtil.fieldLimit)
+        #expect(run.description.hasSuffix("…"))
+
+        let metaJSON = #"{"agentType":"\#(long)","description":"\#(long)","name":"\#(long)"}"#
+        let meta = try JSONDecoder().decode(AgentMeta.self, from: Data(metaJSON.utf8))
+        #expect(meta.agentType?.count == TextUtil.fieldLimit)
+        #expect(meta.description?.count == TextUtil.fieldLimit)
+        #expect(meta.name?.count == TextUtil.fieldLimit)
+        SessionReducer.applyMeta(meta, agentID: "afork", to: &s, now: Fixtures.now)
+        let row = try #require(s.runs["agent:afork"])
+        #expect(row.description.count <= TextUtil.fieldLimit)
+        #expect(row.agentType.count <= TextUtil.fieldLimit)
+        // Short values are untouched.
+        let short = try JSONDecoder().decode(AgentMeta.self, from: Data(#"{"agentType":"Explore","description":"Look"}"#.utf8))
+        #expect(short.agentType == "Explore")
+        #expect(short.description == "Look")
+    }
+
     // MARK: Models
 
     @Test func modelResolutionOrder() throws {

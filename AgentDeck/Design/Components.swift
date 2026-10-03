@@ -2,39 +2,116 @@ import SwiftUI
 import AgentDeckCore
 
 /// A colored status dot. Running dots breathe gently unless Reduce Motion is on.
+///
+/// The pulse itself is drawn by the nearest `.pulseHost()` above this view, so content
+/// containing dots can be flattened with `.drawingGroup()` (GPU) while the ring keeps
+/// animating in the render server.
 struct StatusDot: View {
     var color: Color
     var pulsing: Bool = false
     var size: CGFloat = 8
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulseID = UUID()
 
     var body: some View {
         Circle()
             .fill(color)
             .frame(width: size, height: size)
-            .overlay {
-                if pulsing && !reduceMotion {
-                    PulseHalo(color: color, size: size)
-                }
+            .anchorPreference(key: PulseAnchors.self, value: .bounds) { anchor in
+                pulsing && !reduceMotion && !Experiments.has("nopulse")
+                    ? [PulseAnchors.Item(id: pulseID, anchor: anchor, color: color)] : []
             }
     }
 }
 
-private struct PulseHalo: View {
-    var color: Color
-    var size: CGFloat
-    @State private var on = false
+struct PulseAnchors: PreferenceKey {
+    struct Item: Identifiable {
+        let id: UUID
+        let anchor: Anchor<CGRect>
+        let color: Color
+    }
+    static let defaultValue: [Item] = []
+    static func reduce(value: inout [Item], nextValue: () -> [Item]) { value.append(contentsOf: nextValue()) }
+}
 
-    var body: some View {
-        Circle()
-            .stroke(color.opacity(on ? 0 : 0.55), lineWidth: 1.5)
-            .frame(width: size, height: size)
-            .scaleEffect(on ? 2.2 : 1)
-            .onAppear {
-                withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { on = true }
+extension View {
+    /// Draws the pulse rings for every pulsing `StatusDot` inside this view, on top of it.
+    func pulseHost() -> some View {
+        overlayPreferenceValue(PulseAnchors.self) { items in
+            GeometryReader { geo in
+                ForEach(items) { item in
+                    let r = geo[item.anchor]
+                    PulseRing(color: item.color)
+                        .frame(width: r.width, height: r.height)
+                        .position(x: r.midX, y: r.midY)
+                }
             }
             .allowsHitTesting(false)
+            .clipped()
+        }
+    }
+}
+
+/// An expanding, fading ring driven by a Core Animation layer animation, so it runs in
+/// the render server with no per-frame work on the main thread (hundreds stay cheap).
+struct PulseRing: NSViewRepresentable {
+    var color: Color
+
+    func makeNSView(context: Context) -> PulseRingView { PulseRingView() }
+
+    func updateNSView(_ view: PulseRingView, context: Context) {
+        let resolved = color.resolve(in: context.environment)
+        view.setColor(CGColor(srgbRed: CGFloat(resolved.red), green: CGFloat(resolved.green),
+                              blue: CGFloat(resolved.blue), alpha: CGFloat(resolved.opacity)))
+    }
+}
+
+final class PulseRingView: NSView {
+    private let ring = CAShapeLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = false
+        ring.fillColor = nil
+        ring.lineWidth = 1.5
+        layer?.addSublayer(ring)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func setColor(_ color: CGColor) {
+        if ring.strokeColor != color { ring.strokeColor = color }
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        ring.frame = bounds
+        ring.path = CGPath(ellipseIn: bounds.insetBy(dx: 0.75, dy: 0.75), transform: nil)
+        CATransaction.commit()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        ring.removeAllAnimations()
+        guard window != nil else { return }
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 1
+        scale.toValue = 2.2
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.6
+        fade.toValue = 0
+        let group = CAAnimationGroup()
+        group.animations = [scale, fade]
+        group.duration = 1.6
+        group.repeatCount = .infinity
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        group.isRemovedOnCompletion = false
+        ring.opacity = 0
+        ring.add(group, forKey: "pulse")
     }
 }
 
@@ -97,7 +174,6 @@ struct ProgressRing: View {
                     .trim(from: 0, to: max(0.02, progress))
                     .stroke(isOver ? Color.orange : color, style: .init(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .animation(.linear(duration: 0.9), value: progress)
             }
         }
     }
@@ -118,7 +194,6 @@ struct ProgressBar: View {
                     Capsule()
                         .fill(color)
                         .frame(width: max(height, geo.size.width * progress))
-                        .animation(.linear(duration: 0.9), value: progress)
                 }
             }
             .clipShape(.capsule)

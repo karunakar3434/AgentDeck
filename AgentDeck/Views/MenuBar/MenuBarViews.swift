@@ -9,7 +9,7 @@ struct MenuBarLabel: View {
     @AppStorage(SettingsKey.menuBarCount) private var showCount = true
 
     var body: some View {
-        let n = store.runningAgentCount
+        let n = Experiments.has("nomenubar") ? 0 : store.glanceRunningCount
         HStack(spacing: 3) {
             Image(systemName: n > 0 ? "square.stack.3d.up.fill" : "square.stack.3d.up")
             if showCount && n > 0 {
@@ -93,6 +93,7 @@ struct MenuBarPopover: View {
             .padding(.vertical, 9)
         }
         .frame(width: 340)
+        .pulseHost()
         .background { ClockDriver(isActive: store.runningAgentCount > 0) }
     }
 
@@ -140,6 +141,7 @@ private struct PopoverRunRow: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
+        .drawingGroup()
         .background(hovering ? Color.primary.opacity(0.06) : .clear, in: .rect(cornerRadius: 8))
         .onHover { hovering = $0 }
     }

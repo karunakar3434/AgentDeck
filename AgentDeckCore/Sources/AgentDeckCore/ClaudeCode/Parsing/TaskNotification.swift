@@ -20,6 +20,13 @@ struct TaskNotice: Sendable, Hashable {
     static let openTag = "<task-notification>"
     static let closeTag = "</task-notification>"
 
+    /// The notices of a text that *is* a notification: it starts with `<task-notification>` (after
+    /// whitespace). A message that merely quotes one (a peer handback, a prompt) yields nothing.
+    static func parseLeading(_ text: String) -> [TaskNotice] {
+        guard text.drop(while: { $0.isWhitespace || $0.isNewline }).hasPrefix(openTag) else { return [] }
+        return parseAll(text)
+    }
+
     /// Every notification block in `text`.
     static func parseAll(_ text: String) -> [TaskNotice] {
         guard text.contains(openTag) else { return [] }

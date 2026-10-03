@@ -137,6 +137,14 @@ enum DebugAutomation {
                 "\(type(of: w)) visible=\(w.isVisible) level=\(w.level.rawValue) frame=\(w.frame) title=\(w.title) id=\(w.identifier?.rawValue ?? "-") content=\(w.contentView.map { String(describing: type(of: $0)) } ?? "-")"
             }
             try? lines.joined(separator: "\n").write(toFile: rest.first ?? "/tmp/agentdeck-windows.txt", atomically: true, encoding: .utf8)
+        case "meter":
+            // meter start | meter stop <path>
+            if rest.first == "start", let v = mainWindow()?.contentView {
+                FrameMeter.shared.start(in: v)
+            } else {
+                let report = FrameMeter.shared.stop()
+                try? report.write(toFile: rest.count > 1 ? rest[1] : "/tmp/agentdeck-meter.txt", atomically: true, encoding: .utf8)
+            }
         case "views":
             // Dump the AppKit view tree (class, frame, row counts) to check what cacheDisplay can't draw.
             var out: [String] = []
