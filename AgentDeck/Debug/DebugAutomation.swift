@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 import AgentDeckCore
 
 /// Remote control so the app can be driven and screenshotted from the command line
@@ -85,7 +86,7 @@ enum DebugAutomation {
         case "mock":
             app.setMock(rest.first != "off", stress: rest.first == "stress")
         case "settings":
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            app.openSettingsWindow?()
         case "state":
             let path = rest.first ?? "/tmp/agentdeck-state.txt"
             let s = """
@@ -159,6 +160,11 @@ enum DebugAutomation {
                 let report = FrameMeter.shared.stop()
                 try? report.write(toFile: rest.count > 1 ? rest[1] : "/tmp/agentdeck-meter.txt", atomically: true, encoding: .utf8)
             }
+        case "loginstatus":
+            // Read-only: SMAppService status of the main app (never registers).
+            let st = SMAppService.mainApp.status
+            let name = switch st { case .enabled: "enabled"; case .notRegistered: "notRegistered"; case .requiresApproval: "requiresApproval"; case .notFound: "notFound"; @unknown default: "unknown" }
+            try? "\(name) bundle=\(Bundle.main.bundlePath)".write(toFile: rest.first ?? "/tmp/agentdeck-login.txt", atomically: true, encoding: .utf8)
         case "key":
             // key <chars> [cmd|opt|shift…] | key up/down/return/escape: in-process key events to the key window
             sendKey(rest.first ?? "", modifiers: Array(rest.dropFirst()))
@@ -211,7 +217,8 @@ enum DebugAutomation {
         let window: NSWindow?
         if kind == "settings" {
             window = NSApp.windows.first { $0.isVisible && $0.identifier?.rawValue.contains("Settings") == true }
-                ?? NSApp.windows.first { $0.isVisible && $0.title.contains("Settings") }
+                ?? NSApp.windows.first { $0.isVisible && ($0.title.contains("Settings") || $0.title == "General"
+                    || $0.title == "Notifications" || $0.title == "Data") }
         } else {
             window = mainWindow()
         }

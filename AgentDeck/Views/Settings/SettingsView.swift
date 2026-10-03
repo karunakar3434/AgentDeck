@@ -42,7 +42,7 @@ private struct GeneralSettings: View {
     @AppStorage(SettingsKey.showMenuBarItem) private var showMenuBarItem = true
     @AppStorage(SettingsKey.menuBarCount) private var menuBarCount = true
     @AppStorage(SettingsKey.dockBadge) private var dockBadge = true
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var launchAtLogin = LoginItem.isEnabled
     @State private var loginError: String?
 
     var body: some View {
@@ -62,17 +62,18 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { launchAtLogin = SMAppService.mainApp.status == .enabled }
+        .onAppear { launchAtLogin = LoginItem.isEnabled }
     }
 
     private func setLaunchAtLogin(_ on: Bool) {
+        guard on != LoginItem.isEnabled else { return }
         do {
-            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            try LoginItem.setEnabled(on)
             loginError = nil
         } catch {
             loginError = "Couldn't update the login item: \(error.localizedDescription)"
-            launchAtLogin = SMAppService.mainApp.status == .enabled
         }
+        launchAtLogin = LoginItem.isEnabled
     }
 }
 

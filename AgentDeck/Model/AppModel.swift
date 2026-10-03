@@ -13,6 +13,8 @@ final class AppModel {
 
     /// Opens (or brings forward) the main window; set by a view that has `openWindow`.
     var openMainWindow: (() -> Void)?
+    /// Opens the Settings window; set by a view that has `openSettings`.
+    var openSettingsWindow: (() -> Void)?
 
     private var started = false
     private var source: (any AgentSource)?

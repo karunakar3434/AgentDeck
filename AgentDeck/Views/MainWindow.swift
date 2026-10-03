@@ -8,6 +8,7 @@ struct MainWindow: View {
     @State private var columnVisibility = NavigationSplitViewVisibility.automatic
     @State private var isNarrow = false
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         @Bindable var nav = nav
@@ -36,7 +37,10 @@ struct MainWindow: View {
         .background { ClockDriver(isActive: store.runningAgentCount > 0 || !store.activeTaskIDs.isEmpty) }
         .overlay { CommandPaletteHost() }
         .frame(minWidth: 420, minHeight: 420)
-        .onAppear { app.openMainWindow = { openWindow(id: "main") } }
+        .onAppear {
+            app.openMainWindow = { openWindow(id: "main") }
+            app.openSettingsWindow = { openSettings() }
+        }
         .onGeometryChange(for: Bool.self) { $0.size.width < 640 } action: { narrow in
             // Collapse the sidebar beside an editor; bring it back when there's room.
             guard narrow != isNarrow else { return }
