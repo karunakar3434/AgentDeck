@@ -20,22 +20,31 @@ struct HistoryView: View {
             }
         } else {
             ScrollViewReader { proxy in
-                List {
-                    ForEach(groups, id: \.title) { group in
-                        Section(group.title) {
-                            ForEach(group.ids, id: \.self) { id in
-                                if let task = store.tasks[id] {
-                                    HistoryRow(task: task, isHighlighted: nav.highlightedTaskID == id)
-                                        .id(id)
-                                        .contentShape(.rect)
-                                        .onTapGesture { nav.openTask(id) }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4, pinnedViews: .sectionHeaders) {
+                        ForEach(groups, id: \.title) { group in
+                            Section {
+                                ForEach(group.ids, id: \.self) { id in
+                                    if let task = store.tasks[id] {
+                                        HistoryRow(task: task, isHighlighted: nav.highlightedTaskID == id)
+                                            .id(id)
+                                            .contentShape(.rect)
+                                            .onTapGesture { nav.openTask(id) }
+                                    }
                                 }
+                            } header: {
+                                Text(group.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 6)
+                                    .background(.background)
                             }
                         }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 16)
                 }
-                .listStyle(.inset)
-                .scrollContentBackground(.hidden)
                 .animation(Theme.spring, value: taskIDs)
                 .onChange(of: nav.highlightedTaskID) { _, id in
                     if let id { withAnimation(Theme.snappy) { proxy.scrollTo(id) } }
@@ -131,19 +140,20 @@ struct ActualVsEstimateBar: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 96, alignment: .leading)
                 .lineLimit(1)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
-                    if let est {
-                        Capsule()
-                            .strokeBorder(.secondary.opacity(0.6), style: .init(lineWidth: 1, dash: [2, 2]))
-                            .frame(width: geo.size.width * est / scale)
-                    }
+            let width: CGFloat = 160
+            ZStack(alignment: .leading) {
+                Capsule().fill(.quaternary)
+                if let est {
                     Capsule()
-                        .fill((est.map { actual > $0 } ?? false) ? Color.orange : run.status.color)
-                        .frame(width: max(3, geo.size.width * actual / scale))
+                        .strokeBorder(.secondary.opacity(0.6), style: .init(lineWidth: 1, dash: [2, 2]))
+                        .frame(width: width * est / scale)
                 }
+                Capsule()
+                    .fill((est.map { actual > $0 } ?? false) ? Color.orange : run.status.color)
+                    .frame(width: max(3, width * actual / scale))
             }
+            .frame(width: width, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: 6)
             Text("\(DurationText.short(actual))\(est.map { " / \(run.estimate!.isApproximate ? "~" : "")\(DurationText.short($0))" } ?? "")")
                 .font(.caption2.monospacedDigit())

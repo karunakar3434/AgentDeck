@@ -8,6 +8,7 @@ struct TaskDetailView: View {
 
     @Environment(DeckStore.self) private var store
     @Environment(Navigator.self) private var nav
+    @State private var showChart = false
 
     var body: some View {
         ScrollView {
@@ -18,14 +19,24 @@ struct TaskDetailView: View {
                         AgentTree(task: task)
                     }
                 }
-                if !Experiments.has("nochart") {
-                    section("Timeline", symbol: "chart.bar.xaxis") {
+                section("Timeline", symbol: "chart.bar.xaxis") {
+                    // Built a frame after the rest of the detail so opening a task responds at once.
+                    if showChart {
                         TimelineChart(task: task)
                             .padding(.top, 6)
+                            .transition(.opacity)
+                    } else {
+                        Color.clear.frame(height: CGFloat(task.runIDs.count) * 24 + 46)
                     }
                 }
             }
             .padding(18)
+        }
+        .task(id: task.id) {
+            showChart = false
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(30))
+            withAnimation(.easeOut(duration: 0.18)) { showChart = true }
         }
         .background {
             RoundedRectangle(cornerRadius: 0)

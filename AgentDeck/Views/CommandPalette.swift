@@ -180,7 +180,6 @@ private struct PaletteRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .foregroundStyle(isSelected ? .white : .primary)
-        .drawingGroup()
         .background(isSelected ? Color.accentColor : .clear, in: .rect(cornerRadius: 8))
     }
 }

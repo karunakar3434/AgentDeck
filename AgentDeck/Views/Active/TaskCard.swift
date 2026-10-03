@@ -10,6 +10,10 @@ struct TaskCard: View {
     @Environment(DeckStore.self) private var store
     @State private var hovering = false
 
+    /// Room reserved in the flattened content for the live overlays.
+    private static let elapsedWidth: CGFloat = 64
+    private static let trailingWidth: CGFloat = 108
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -20,8 +24,7 @@ struct TaskCard: View {
                     .lineLimit(2, reservesSpace: true)
                     .matchedGeometryEffect(id: "title-\(task.id)", in: namespace, properties: .position)
                 Spacer(minLength: 8)
-                TaskElapsedText(task: task)
-                    .foregroundStyle(.secondary)
+                Color.clear.frame(width: Self.elapsedWidth, height: 1)
             }
 
             HStack(spacing: 6) {
@@ -39,8 +42,23 @@ struct TaskCard: View {
 
             HStack(spacing: 8) {
                 AvatarStack(task: task)
-                Spacer(minLength: 4)
-                Group {
+                Color.clear.frame(width: Self.trailingWidth, height: 22)
+            }
+        }
+        .padding(14)
+        // Rasterize the card's static content as one GPU-backed layer. On macOS SwiftUI
+        // otherwise redraws the whole card on the CPU whenever anything in it changes.
+        // The once-a-second timers live in small overlays outside it, so a clock tick
+        // redraws only them.
+        .drawingGroup()
+        .overlay(alignment: .topTrailing) {
+            TaskElapsedText(task: task)
+                .foregroundStyle(.secondary)
+                .padding(.top, 15)
+                .padding(.trailing, 14)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            Group {
                 if task.status == .waiting {
                     Label("Waiting on you", systemImage: "hand.raised.fill")
                         .font(.caption.weight(.medium))
@@ -48,15 +66,11 @@ struct TaskCard: View {
                 } else {
                     TaskETAText(task: task)
                 }
-                }
-                .fixedSize()
-                .layoutPriority(1)
             }
+            .lineLimit(1)
+            .frame(height: 22)
+            .padding(14)
         }
-        .padding(14)
-        // Rasterize the card's content on the GPU: on macOS SwiftUI otherwise redraws the
-        // whole card layer on the CPU whenever any timer text in it changes.
-        .drawingGroup()
         .background {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(.background.secondary)
@@ -64,10 +78,9 @@ struct TaskCard: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(isHighlighted ? Color.accentColor : Color.primary.opacity(hovering ? 0.14 : 0.07),
+                .strokeBorder(isHighlighted ? Color.accentColor : Color.primary.opacity(hovering ? 0.16 : 0.07),
                               lineWidth: isHighlighted ? 2 : 1)
         }
-        .shadow(color: .black.opacity(hovering ? 0.10 : 0.04), radius: hovering ? 8 : 3, y: hovering ? 3 : 1)
         .scaleEffect(hovering ? 1.005 : 1)
         .animation(Theme.snappy, value: hovering)
         .onHover { hovering = $0 }

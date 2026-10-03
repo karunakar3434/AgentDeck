@@ -9,7 +9,7 @@ struct AgentTree: View {
 
     var body: some View {
         let ordered = orderedRuns()
-        VStack(alignment: .leading, spacing: 2) {
+        LazyVStack(alignment: .leading, spacing: 2) {
             ForEach(ordered, id: \.id) { run in
                 AgentRow(run: run, isSelected: nav.inspectedRunID == run.id && nav.showInspector)
                     .padding(.leading, CGFloat(run.depth) * 18)
@@ -99,6 +99,7 @@ struct AgentRow: View {
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
+        // Live rows: flatten so a status or activity change redraws one GPU-backed layer.
         .drawingGroup()
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
