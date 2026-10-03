@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 import AgentDeckCore
+import AgentDeckState
 
 /// Remote control so the app can be driven and screenshotted from the command line
 /// without Screen Recording or Accessibility permissions. Active in Debug builds, and in

@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 /// The menu bar item's label: a glyph and the running-agent count.
 struct MenuBarLabel: View {
@@ -23,6 +24,8 @@ struct MenuBarLabel: View {
 
 /// Compact popover listing running agents with their progress.
 struct MenuBarPopover: View {
+    private static let maxRows = 40
+    private static let rowHeight: CGFloat = 58
     @Environment(DeckStore.self) private var store
     @Environment(Navigator.self) private var nav
     @Environment(\.openWindow) private var openWindow
@@ -62,22 +65,27 @@ struct MenuBarPopover: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 22)
             } else {
+                // Longest-running first; capped so the popover stays light with hundreds of agents.
+                let shown = Array(store.runningRunIDs.prefix(Self.maxRows)).compactMap { store.runs[$0] }
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        ForEach(store.runningRunIDs, id: \.self) { id in
-                            if let run = store.runs[id] {
-                                PopoverRunRow(run: run, taskTitle: store.tasks[run.taskID]?.title ?? "")
-                                    .contentShape(.rect)
-                                    .onTapGesture { open(run) }
-                                    .transition(.opacity.combined(with: .move(edge: .top)))
-                            }
+                        ForEach(shown) { run in
+                            PopoverRunRow(run: run, taskTitle: store.tasks[run.taskID]?.title ?? "")
+                                .contentShape(.rect)
+                                .onTapGesture { open(run) }
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                        if store.runningRunIDs.count > Self.maxRows {
+                            Text("and \(store.runningRunIDs.count - Self.maxRows) more")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 6)
                         }
                     }
                     .padding(.horizontal, 6)
-                    .animation(Theme.spring, value: store.runningRunIDs)
+                    .animation(Theme.spring, value: shown.map(\.id))
                 }
-                .frame(maxHeight: 380)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(height: min(380, CGFloat(shown.count) * Self.rowHeight + 8))
             }
 
             Divider().padding(.top, 4)
@@ -94,7 +102,7 @@ struct MenuBarPopover: View {
         }
         .frame(width: 340)
         .pulseHost()
-        .background { ClockDriver(isActive: store.runningAgentCount > 0) }
+        .background { ClockDriver(isActive: store.isLive) }
     }
 
     private func open(_ run: RunModel) {

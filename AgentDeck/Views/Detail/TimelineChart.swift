@@ -1,6 +1,7 @@
 import SwiftUI
 import Charts
 import AgentDeckCore
+import AgentDeckState
 
 /// Gantt-style timeline of a task's runs with a "now" line. Click a bar to inspect.
 struct TimelineChart: View {
@@ -19,7 +20,8 @@ struct TimelineChart: View {
     }
 
     var body: some View {
-        let now = Clock.shared.now
+        // A minutes-wide Gantt chart doesn't need per-second precision; Charts rebuilds are costly.
+        let now = Clock.shared.coarseNow
         let runs = store.runs(of: task)
         let bars = runs.enumerated().map { i, r in
             Bar(

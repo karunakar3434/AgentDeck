@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 struct Sidebar: View {
     @Environment(DeckStore.self) private var store
@@ -28,7 +29,7 @@ struct Sidebar: View {
             if !store.projects.isEmpty {
                 Section("Projects") {
                     ForEach(store.projects, id: \.self) { name in
-                        ProjectRow(name: name)
+                        ProjectRow(name: name, active: store.activeCountByProject[name] ?? 0)
                             .tag(SidebarSection.project(name))
                     }
                 }
@@ -43,10 +44,9 @@ struct Sidebar: View {
 
 private struct ProjectRow: View {
     var name: String
-    @Environment(DeckStore.self) private var store
+    var active: Int
 
     var body: some View {
-        let active = store.activeTaskIDs.reduce(0) { $0 + (store.tasks[$1]?.projectName == name ? 1 : 0) }
         Label {
             Text(name).lineLimit(1)
         } icon: {

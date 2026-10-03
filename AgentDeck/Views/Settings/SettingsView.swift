@@ -42,6 +42,7 @@ private struct GeneralSettings: View {
     @AppStorage(SettingsKey.showMenuBarItem) private var showMenuBarItem = true
     @AppStorage(SettingsKey.menuBarCount) private var menuBarCount = true
     @AppStorage(SettingsKey.dockBadge) private var dockBadge = true
+    @Environment(AppModel.self) private var app
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var loginError: String?
 
@@ -63,6 +64,7 @@ private struct GeneralSettings: View {
         }
         .formStyle(.grouped)
         .onAppear { launchAtLogin = LoginItem.isEnabled }
+        .onChange(of: dockBadge) { app.updateDockBadge() }
     }
 
     private func setLaunchAtLogin(_ on: Bool) {

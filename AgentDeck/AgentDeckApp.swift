@@ -1,9 +1,18 @@
 import SwiftUI
 import AgentDeckCore
 
+/// Installs the notification delegate before launch completes, so a click on a
+/// notification that launched the app is delivered (and remembered until the task loads).
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        AppModel.shared.prepareForLaunch()
+    }
+}
+
 @main
 struct AgentDeckApp: App {
-    @State private var app = AppModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @State private var app = AppModel.shared
     @AppStorage(SettingsKey.showMenuBarItem) private var showMenuBarItem = true
 
     init() {

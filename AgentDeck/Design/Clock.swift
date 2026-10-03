@@ -10,11 +10,15 @@ import SwiftUI
 final class Clock {
     static let shared = Clock()
     private(set) var now = Date()
+    /// `now` rounded down to 5 s, for views that are expensive to rebuild (the timeline chart).
+    private(set) var coarseNow = Date()
 
     func tick(_ date: Date) {
         // Whole-second granularity keeps text from re-rendering more than once a second.
         let t = date.timeIntervalSinceReferenceDate.rounded(.down)
         if t != now.timeIntervalSinceReferenceDate { now = Date(timeIntervalSinceReferenceDate: t) }
+        let c = (t / 5).rounded(.down) * 5
+        if c != coarseNow.timeIntervalSinceReferenceDate { coarseNow = Date(timeIntervalSinceReferenceDate: c) }
     }
 
     func sync() { tick(Date()) }

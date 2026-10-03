@@ -1,26 +1,21 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 /// Live counts across the top of the Active view.
 struct HeaderStrip: View {
     @Environment(DeckStore.self) private var store
     var activeCount: Int
+    @State private var columns = 4
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) { tiles }
-            Grid(horizontalSpacing: 10, verticalSpacing: 10) {
-                GridRow { activeTile; agentsTile }
-                GridRow { modelsTile; LongestTile() }
-            }
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: columns), spacing: 10) {
+            activeTile
+            agentsTile
+            modelsTile
+            LongestTile()
         }
-    }
-
-    @ViewBuilder private var tiles: some View {
-        activeTile
-        agentsTile
-        modelsTile
-        LongestTile()
+        .onGeometryChange(for: Int.self) { $0.size.width >= 4 * 170 + 30 ? 4 : 2 } action: { columns = $0 }
     }
 
     private var activeTile: some View {
@@ -32,10 +27,12 @@ struct HeaderStrip: View {
     }
 
     private var agentsTile: some View {
-        StatTile(title: "Running agents", symbol: "person.2.fill", tint: .green) {
-            Text("\(store.runningAgentCount)")
-                .contentTransition(.numericText(value: Double(store.runningAgentCount)))
-                .animation(Theme.spring, value: store.runningAgentCount)
+        // The throttled count: rolls at most twice a second instead of animating constantly.
+        let n = store.glanceRunningCount
+        return StatTile(title: "Running agents", symbol: "person.2.fill", tint: .green) {
+            Text("\(n)")
+                .contentTransition(.numericText(value: Double(n)))
+                .animation(Theme.spring, value: n)
         }
     }
 
@@ -64,9 +61,8 @@ private struct LongestTile: View {
     @Environment(Navigator.self) private var nav
 
     var body: some View {
-        // Prefer the longest-running subagent; the main agents are almost always older.
-        let ids = store.runningRunIDs
-        let run = (ids.lazy.compactMap { store.runs[$0] }.first { !$0.isMain }) ?? ids.first.flatMap { store.runs[$0] }
+        // Longest-running subagent (main agents are almost always older), kept by the store.
+        let run = store.longestRun
         StatTile(title: "Longest running", symbol: "hourglass", tint: .orange) {
             if let run {
                 HStack(spacing: 6) {

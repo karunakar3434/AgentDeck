@@ -80,9 +80,11 @@ Estimation/EstimateScanner.swift           actor: background duration scan using
 Persistence/HistoryStore.swift             DatabasePool, buffered writes, reads, prune, shared(at:)
 Persistence/Schema.swift                   DatabaseMigrator ("v1", …)
 Persistence/Records.swift                  GRDB records for the four tables
-Mock/MockAgentSource.swift                 public facade + Scenario
-Mock/MockSimulator.swift                   actor: world model and tick loop
-Mock/MockScript.swift                      SplitMix64, canned types/tools/summaries, duration distributions
+Mock/MockAgentSource.swift                 public facade + Scenario; actor MockSimulator (real-time loop, 16 ms batches)
+Mock/MockWorld.swift                       deterministic world model: tasks, agents, per-scenario MockTuning
+Mock/MockEventQueue.swift                  min-heap of timed events (ties broken by insertion order)
+Mock/MockScript.swift                      canned agent profiles (base durations, seeded sample counts), projects, tools, summaries
+Mock/SeededRandom.swift                    SplitMix64
 ```
 
 ## 3. Public API (adapter protocol)

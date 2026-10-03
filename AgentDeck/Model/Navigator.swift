@@ -43,6 +43,8 @@ final class Navigator {
 
     func openTask(_ id: String) {
         withAnimation(Theme.spring) {
+            // The inspector belongs to the open task; don't carry another task's agent over.
+            if let run = inspectedRunID, !run.hasPrefix(id + "/") { inspectedRunID = nil }
             openTaskID = id
             highlightedTaskID = id
         }

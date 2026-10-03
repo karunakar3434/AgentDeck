@@ -27,7 +27,7 @@ enum LoginItem {
             try writeAgent()
         } else {
             if SMAppService.mainApp.status == .enabled || SMAppService.mainApp.status == .requiresApproval {
-                try? SMAppService.mainApp.unregister()
+                try SMAppService.mainApp.unregister()
             }
             if FileManager.default.fileExists(atPath: agentURL.path) {
                 try FileManager.default.removeItem(at: agentURL)
@@ -38,7 +38,8 @@ enum LoginItem {
     private static func writeAgent() throws {
         let plist: [String: Any] = [
             "Label": label,
-            "ProgramArguments": ["/usr/bin/open", "-g", Bundle.main.bundlePath],
+            // By bundle id, so it opens whichever copy is installed (/Applications after `make install`).
+            "ProgramArguments": ["/usr/bin/open", "-g", "-b", Bundle.main.bundleIdentifier ?? "com.karun.AgentDeck"],
             "RunAtLoad": true,
             "ProcessType": "Interactive",
         ]

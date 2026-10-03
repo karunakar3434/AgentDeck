@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 /// ⌘K palette: jump to any task or agent.
 struct CommandPaletteHost: View {
@@ -32,7 +33,7 @@ private struct PaletteItem: Identifiable, Hashable {
     let subtitle: String
     let symbol: String
     let taskID: String?
-    let score: Int
+    var score: Int
 }
 
 private struct CommandPalette: View {
@@ -41,10 +42,13 @@ private struct CommandPalette: View {
     @Environment(Navigator.self) private var nav
     @State private var query = ""
     @State private var selection = 0
+    /// Snapshot of searchable items, taken once per opening (a jump palette doesn't need
+    /// live re-ranking; `open` re-looks up the task anyway).
+    @State private var corpus: [Candidate]?
+    @State private var items: [PaletteItem] = []
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
-        let items = results()
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
@@ -72,7 +76,6 @@ private struct CommandPalette: View {
                         LazyVStack(spacing: 2) {
                             ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
                                 PaletteRow(item: item, isSelected: i == selection)
-                                    .id(i)
                                     .contentShape(.rect)
                                     .onTapGesture { selection = i; open(items) }
                             }
@@ -80,7 +83,9 @@ private struct CommandPalette: View {
                         .padding(6)
                     }
                     .frame(maxHeight: 340)
-                    .onChange(of: selection) { _, s in proxy.scrollTo(s) }
+                    .onChange(of: selection) { _, s in
+                        if items.indices.contains(s) { proxy.scrollTo(items[s].id) }
+                    }
                 }
             } else if !query.isEmpty {
                 Divider()
@@ -97,7 +102,11 @@ private struct CommandPalette: View {
         .clipShape(.rect(cornerRadius: 16))
         .shadow(color: .black.opacity(0.25), radius: 28, y: 12)
         .onAppear { fieldFocused = true; selection = 0 }
-        .onChange(of: query) { selection = 0 }
+        .onChange(of: query, initial: true) { _, q in
+            if corpus == nil { corpus = Self.corpus(from: store) }
+            items = Self.rank(corpus ?? [], query: q.trimmingCharacters(in: .whitespaces).lowercased())
+            selection = 0
+        }
     }
 
     private func open(_ items: [PaletteItem]) {
@@ -120,37 +129,55 @@ private struct CommandPalette: View {
         }
     }
 
-    private func results() -> [PaletteItem] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        var out: [PaletteItem] = []
-        let sections: [(SidebarSection, String)] = [(.active, "bolt.horizontal.circle"), (.history, "clock.arrow.circlepath")]
-        for (s, sym) in sections {
-            let score = Fuzzy.score(q, s.title)
-            if q.isEmpty || score > 0 {
-                out.append(PaletteItem(id: "section-\(s.title)", kind: .section(s), title: "Go to \(s.title)",
-                                       subtitle: "", symbol: sym, taskID: nil, score: score + (q.isEmpty ? 0 : 5)))
+    /// A searchable entry with its lowercased search keys precomputed.
+    struct Candidate {
+        var item: PaletteItem
+        var keys: [String]
+        var boost: Int
+        /// Shown with an empty query.
+        var featured: Bool
+    }
+
+    private static func corpus(from store: DeckStore) -> [Candidate] {
+        var out: [Candidate] = []
+        for (s, sym) in [(SidebarSection.active, "bolt.horizontal.circle"), (.history, "clock.arrow.circlepath")] {
+            out.append(Candidate(item: PaletteItem(id: "section-\(s.title)", kind: .section(s), title: "Go to \(s.title)",
+                                                   subtitle: "", symbol: sym, taskID: nil, score: 0),
+                                 keys: [s.title.lowercased()], boost: 5, featured: true))
+        }
+        for t in store.activeTasks + store.inactiveTasks {
+            out.append(Candidate(item: PaletteItem(id: t.id, kind: .task, title: t.title, subtitle: "\(t.projectName) · \(t.status.label)",
+                                                   symbol: t.status.symbol, taskID: t.id, score: 0),
+                                 keys: [t.title.lowercased(), t.projectName.lowercased()],
+                                 boost: t.status.isActive ? 20 : 0, featured: true))
+            for r in t.runs.dropFirst() {
+                out.append(Candidate(item: PaletteItem(id: r.id, kind: .agent, title: "\(r.agentType): \(r.description)",
+                                                       subtitle: "\(t.title) · \(r.status.label)",
+                                                       symbol: AgentGlyph.symbol(for: r.agentType, isMain: false), taskID: t.id, score: 0),
+                                     keys: [r.agentType.lowercased(), r.description.lowercased()],
+                                     boost: r.status == .running ? 15 : 0, featured: r.status == .running))
             }
         }
-        for id in store.activeTaskIDs + store.inactiveTaskIDs {
-            guard let t = store.tasks[id] else { continue }
-            let score = max(Fuzzy.score(q, t.title), Fuzzy.score(q, t.projectName))
-            if q.isEmpty || score > 0 {
-                out.append(PaletteItem(id: t.id, kind: .task, title: t.title, subtitle: "\(t.projectName) · \(t.status.label)",
-                                       symbol: t.status.symbol, taskID: t.id,
-                                       score: score + (t.status.isActive ? 20 : 0)))
-            }
-            for rid in t.runIDs.dropFirst() {
-                guard let r = store.runs[rid] else { continue }
-                let s = max(Fuzzy.score(q, r.agentType), Fuzzy.score(q, r.description))
-                if (q.isEmpty && r.status == .running) || (!q.isEmpty && s > 0) {
-                    out.append(PaletteItem(id: r.id, kind: .agent, title: "\(r.agentType): \(r.description)",
-                                           subtitle: "\(t.title) · \(r.status.label)",
-                                           symbol: AgentGlyph.symbol(for: r.agentType, isMain: false), taskID: t.id,
-                                           score: s + (r.status == .running ? 15 : 0)))
-                }
+        return out
+    }
+
+    private static func rank(_ corpus: [Candidate], query q: String) -> [PaletteItem] {
+        var scored: [PaletteItem] = []
+        for c in corpus {
+            if q.isEmpty {
+                guard c.featured else { continue }
+                var item = c.item
+                item.score = c.boost
+                scored.append(item)
+            } else {
+                let s = c.keys.map { Fuzzy.score(q, $0) }.max() ?? 0
+                guard s > 0 else { continue }
+                var item = c.item
+                item.score = s + c.boost
+                scored.append(item)
             }
         }
-        return Array(out.sorted { $0.score > $1.score }.prefix(50))
+        return Array(scored.sorted { $0.score > $1.score }.prefix(50))
     }
 }
 
@@ -188,8 +215,8 @@ private struct PaletteRow: View {
 enum Fuzzy {
     static func score(_ query: String, _ text: String) -> Int {
         guard !query.isEmpty else { return 0 }
-        let t = text.lowercased()
-        if t.hasPrefix(query) { return 100 }
+        let t = text
+        if t.hasPrefix(query) { return 100 }  // callers pass lowercased text
         if t.contains(query) { return 60 }
         var score = 0, ti = t.startIndex
         for qc in query {

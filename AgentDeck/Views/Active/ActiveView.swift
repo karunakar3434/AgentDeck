@@ -1,23 +1,23 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 /// The Active view: live header strip, then one card per active task.
 struct ActiveView: View {
-    var taskIDs: [String]
+    var tasks: [TaskModel]
     var namespace: Namespace.ID
     var project: String? = nil
 
-    @Environment(DeckStore.self) private var store
     @Environment(Navigator.self) private var nav
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    HeaderStrip(activeCount: taskIDs.count)
+                    HeaderStrip(activeCount: tasks.count)
                         .padding(.bottom, 4)
 
-                    if taskIDs.isEmpty {
+                    if tasks.isEmpty {
                         ActiveEmptyState(project: project)
                             .frame(maxWidth: .infinity)
                             .padding(.top, 40)
@@ -26,24 +26,24 @@ struct ActiveView: View {
 
                     // One column beside an editor, more as the window widens.
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 12, alignment: .top)], spacing: 12) {
-                        ForEach(taskIDs, id: \.self) { id in
-                            if let task = store.tasks[id] {
-                                TaskCard(task: task, namespace: namespace, isHighlighted: nav.highlightedTaskID == id)
-                                    .id(id)
-                                    .onTapGesture { nav.openTask(id) }
-                                    .transition(.asymmetric(
-                                        insertion: .scale(scale: 0.96).combined(with: .opacity),
-                                        removal: .opacity.combined(with: .scale(scale: 0.96))
-                                    ))
-                            }
+                        // Exactly one view per element, straight from the models (no lookups).
+                        ForEach(tasks) { task in
+                            TaskCard(task: task, namespace: namespace, isHighlighted: nav.highlightedTaskID == task.id)
+                                .id(task.id)
+                                .onTapGesture { nav.openTask(task.id) }
+                                .transition(.asymmetric(
+                                    insertion: .scale(scale: 0.96).combined(with: .opacity),
+                                    removal: .opacity.combined(with: .scale(scale: 0.96))
+                                ))
                         }
                     }
+                    // Animate card insertions, removals and moves only.
+                    .animation(Theme.spring, value: tasks.map(\.id))
                 }
                 .padding(16)
-                .animation(Theme.spring, value: taskIDs)
             }
             .onChange(of: nav.highlightedTaskID) { _, id in
-                guard let id else { return }
+                guard let id, nav.openTaskID == nil else { return }
                 withAnimation(Theme.snappy) { proxy.scrollTo(id, anchor: nil) }
             }
         }

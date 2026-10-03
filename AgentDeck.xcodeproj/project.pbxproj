@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		B8AE1ACF96CB32E9C6EA1482 /* AgentDeckCore in Frameworks */ = {isa = PBXBuildFile; productRef = 9267E4D703B2089F4C9F8B96 /* AgentDeckCore */; };
+		3B0A09140624E5EC45188CF2 /* AgentDeckState in Frameworks */ = {isa = PBXBuildFile; productRef = 8ABC3155B2D0B076E660ABDC /* AgentDeckState */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B8AE1ACF96CB32E9C6EA1482 /* AgentDeckCore in Frameworks */,
+				3B0A09140624E5EC45188CF2 /* AgentDeckState in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,6 +73,7 @@
 			name = AgentDeck;
 			packageProductDependencies = (
 				9267E4D703B2089F4C9F8B96 /* AgentDeckCore */,
+				8ABC3155B2D0B076E660ABDC /* AgentDeckState */,
 			);
 			productName = AgentDeck;
 			productReference = 32EC4A5E93FDD01D61FD79E4 /* AgentDeck.app */;
@@ -285,6 +288,10 @@
 		9267E4D703B2089F4C9F8B96 /* AgentDeckCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AgentDeckCore;
+		};
+		8ABC3155B2D0B076E660ABDC /* AgentDeckState */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AgentDeckState;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

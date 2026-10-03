@@ -1,50 +1,63 @@
-import SwiftUI
+import Foundation
+import Observation
 import AgentDeckCore
 
 /// Main-actor mirror of the core's state. Receives coalesced `DeckUpdate`s and
 /// applies them to long-lived `TaskModel`/`RunModel` objects.
 @MainActor @Observable
-final class DeckStore {
-    private(set) var tasks: [String: TaskModel] = [:]
-    private(set) var runs: [String: RunModel] = [:]
+public final class DeckStore {
+    public init() {}
+
+    public private(set) var tasks: [String: TaskModel] = [:]
+    public private(set) var runs: [String: RunModel] = [:]
 
     /// Active (running/waiting) task ids, most recently started first.
-    private(set) var activeTaskIDs: [String] = []
+    public private(set) var activeTaskIDs: [String] = []
     /// Tasks that are no longer active, most recently ended first.
-    private(set) var inactiveTaskIDs: [String] = []
+    public private(set) var inactiveTaskIDs: [String] = []
     /// Ids of runs currently running, longest-running first.
-    private(set) var runningRunIDs: [String] = []
+    public private(set) var runningRunIDs: [String] = []
     /// Distinct project names, sorted.
-    private(set) var projects: [String] = []
-    private(set) var agentTypes: [String] = []
+    public private(set) var projects: [String] = []
+    public private(set) var agentTypes: [String] = []
 
-    private(set) var initialLoadComplete = false
-    private(set) var lastFinishedAt: Date?
-    private(set) var loadError: String?
+    public private(set) var initialLoadComplete = false
+    public private(set) var lastFinishedAt: Date?
+    public private(set) var loadError: String?
 
     // Header-strip aggregates.
-    private(set) var runningAgentCount = 0
+    public private(set) var runningAgentCount = 0
     /// `runningAgentCount` throttled to at most two changes a second, for the menu bar item,
     /// Dock badge and window subtitle: AppKit re-lays out the status item and title bar on
     /// every change, which is expensive when hundreds of agents churn.
-    private(set) var glanceRunningCount = 0
+    public private(set) var glanceRunningCount = 0
     @ObservationIgnored private var glancePublishedAt = Date.distantPast
     @ObservationIgnored private var glancePending = false
-    private(set) var modelsInUse: [ModelFamily] = []
+    public private(set) var modelsInUse: [ModelFamily] = []
+    /// The models behind `activeTaskIDs` / `inactiveTaskIDs`, same order. Lists iterate
+    /// these instead of looking ids up in `tasks` (which changes on any insertion).
+    public private(set) var activeTasks: [TaskModel] = []
+    public private(set) var inactiveTasks: [TaskModel] = []
+    public private(set) var activeCountByProject: [String: Int] = [:]
+    /// The longest-running subagent (else main agent), for the header tile.
+    public private(set) var longestRun: RunModel?
+    /// Anything running or active. Changes only on idle ↔ live transitions.
+    public private(set) var isLive = false
 
     /// Called when a task finishes or a subagent fails (for notifications).
-    var onEvent: ((DeckEvent) -> Void)?
+    public var onEvent: ((DeckEvent) -> Void)?
     /// Called when `glanceRunningCount` changes (Dock badge).
-    @ObservationIgnored var onGlanceChange: ((Int) -> Void)?
+    @ObservationIgnored public var onGlanceChange: ((Int) -> Void)?
 
-    func task(_ id: String) -> TaskModel? { tasks[id] }
-    func run(_ id: String) -> RunModel? { runs[id] }
+    public func task(_ id: String) -> TaskModel? { tasks[id] }
+    public func run(_ id: String) -> RunModel? { runs[id] }
 
-    func runs(of task: TaskModel) -> [RunModel] { task.runs }
+    public func runs(of task: TaskModel) -> [RunModel] { task.runs }
 
-    func setError(_ message: String?) { if loadError != message { loadError = message } }
+    public func setError(_ message: String?) { if loadError != message { loadError = message } }
 
-    func reset() {
+    public func reset() {
+        loadError = nil
         tasks = [:]
         runs = [:]
         activeTaskIDs = []
@@ -57,9 +70,16 @@ final class DeckStore {
         modelsInUse = []
         lastFinishedAt = nil
         initialLoadComplete = false
+        activeTasks = []
+        inactiveTasks = []
+        activeCountByProject = [:]
+        longestRun = nil
+        isLive = false
+        glancePublishedAt = .distantPast
+        onGlanceChange?(0)
     }
 
-    func apply(_ update: DeckUpdate) {
+    public func apply(_ update: DeckUpdate) {
         var structureChanged = false
         switch update.health {
         case .ok?: setError(nil)
@@ -75,6 +95,7 @@ final class DeckStore {
         }
         var newRuns: [String: RunModel] = [:]
 
+        let notify = update.initialLoadComplete || initialLoadComplete
         for snap in update.changed {
             if let model = tasks[snap.id] {
                 let oldStatus = model.status
@@ -82,7 +103,7 @@ final class DeckStore {
                 model.apply(snap)
                 if oldStatus != snap.status {
                     structureChanged = true
-                    if update.initialLoadComplete || initialLoadComplete {
+                    if notify {
                         if snap.status == .done || snap.status == .idle, oldStatus.isActive {
                             onEvent?(.taskFinished(taskID: snap.id, failed: false))
                         } else if snap.status == .failed {
@@ -99,26 +120,38 @@ final class DeckStore {
             let previousRunIDs = Set(tasks[snap.id]?.runs.map(\.id) ?? [])
             var models: [RunModel] = []
             models.reserveCapacity(snap.runs.count)
+            var keys: [String] = []
+            keys.reserveCapacity(snap.runs.count)
             for r in snap.runs {
-                if let model = runs[r.id] ?? newRuns[r.id] {
+                let key = RunKey.make(task: snap.id, run: r.id)
+                keys.append(key)
+                if let model = runs[key] ?? newRuns[key] {
                     models.append(model)
-                    let old = model.status
+                    let old = (model.status, model.model.id, model.agentType)
                     model.apply(r)
-                    if old != r.status {
+                    if old.0 != r.status {
                         structureChanged = true
-                        if r.status == .failed, initialLoadComplete, !r.isMain {
-                            onEvent?(.subagentFailed(taskID: snap.id, runID: r.id))
+                        if r.status == .failed, notify, !r.isMain {
+                            onEvent?(.subagentFailed(taskID: snap.id, runID: key))
                         }
+                    } else if old.1 != r.model.id || old.2 != r.agentType {
+                        // "Models in use" and the agent-type filter list depend on these.
+                        structureChanged = true
                     }
                 } else {
                     let model = RunModel(r)
-                    newRuns[r.id] = model
+                    newRuns[key] = model
                     models.append(model)
                     structureChanged = true
+                    // A run can arrive already failed (e.g. the Agent call errored at once). Only
+                    // after the initial load, so historical failures don't notify.
+                    if r.status == .failed, initialLoadComplete, !r.isMain {
+                        onEvent?(.subagentFailed(taskID: snap.id, runID: key))
+                    }
                 }
             }
             // Drop runs that disappeared from this task (e.g. an orphan merged into its Agent run).
-            for gone in previousRunIDs.subtracting(snap.runs.map(\.id)) { runs.removeValue(forKey: gone) }
+            for gone in previousRunIDs.subtracting(keys) { runs.removeValue(forKey: gone) }
             tasks[snap.id]?.setRuns(models)
         }
         if !newRuns.isEmpty { runs.merge(newRuns) { a, _ in a } }
@@ -139,6 +172,9 @@ final class DeckStore {
         inactive.sort { ($0.endedAt ?? $0.lastActivityAt, $0.id) > ($1.endedAt ?? $1.lastActivityAt, $1.id) }
         setIfChanged(\.activeTaskIDs, active.map(\.id))
         setIfChanged(\.inactiveTaskIDs, inactive.map(\.id))
+        setIfChangedByIdentity(\.activeTasks, active)
+        setIfChangedByIdentity(\.inactiveTasks, inactive)
+        setIfChanged(\.activeCountByProject, Dictionary(active.map { ($0.projectName, 1) }, uniquingKeysWith: +))
         setIfChanged(\.projects, projectSet.sorted { $0.localizedStandardCompare($1) == .orderedAscending })
 
         var running: [RunModel] = []
@@ -154,6 +190,9 @@ final class DeckStore {
         }
         running.sort { ($0.startedAt, $0.id) < ($1.startedAt, $1.id) }
         setIfChanged(\.runningRunIDs, running.map(\.id))
+        let longest = running.first { !$0.isMain } ?? running.first
+        if longestRun !== longest { longestRun = longest }
+        setIfChanged(\.isLive, !running.isEmpty || !active.isEmpty)
         setIfChanged(\.runningAgentCount, running.count)
         scheduleGlanceUpdate()
         setIfChanged(\.modelsInUse, families.sorted())
@@ -167,7 +206,8 @@ final class DeckStore {
         let wait = 0.5 - Date().timeIntervalSince(glancePublishedAt)
         if wait <= 0 { publishGlance(); return }
         glancePending = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
             guard let self else { return }
             glancePending = false
             publishGlance()
@@ -181,12 +221,17 @@ final class DeckStore {
         onGlanceChange?(glanceRunningCount)
     }
 
+    private func setIfChangedByIdentity<T: AnyObject>(_ kp: ReferenceWritableKeyPath<DeckStore, [T]>, _ v: [T]) {
+        let old = self[keyPath: kp]
+        if old.count != v.count || zip(old, v).contains(where: { $0 !== $1 }) { self[keyPath: kp] = v }
+    }
+
     private func setIfChanged<V: Equatable>(_ kp: ReferenceWritableKeyPath<DeckStore, V>, _ v: V) {
         if self[keyPath: kp] != v { self[keyPath: kp] = v }
     }
 }
 
-enum DeckEvent {
+public enum DeckEvent: Sendable, Equatable {
     case taskFinished(taskID: String, failed: Bool)
     case subagentFailed(taskID: String, runID: String)
 }
@@ -194,10 +239,10 @@ enum DeckEvent {
 /// Memoized `ModelFamily(modelID:)`: there are only a handful of distinct model ids,
 /// and resolving one lowercases and scans the string.
 @MainActor
-enum FamilyCache {
+public enum FamilyCache {
     private static var cache: [String: ModelFamily] = [:]
 
-    static func family(_ id: String?) -> ModelFamily {
+    public static func family(_ id: String?) -> ModelFamily {
         guard let id else { return .other }
         if let f = cache[id] { return f }
         let f = ModelFamily(modelID: id)

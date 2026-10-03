@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 struct MainToolbar: ToolbarContent {
     @Environment(DeckStore.self) private var store

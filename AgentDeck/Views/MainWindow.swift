@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 struct MainWindow: View {
     @Environment(DeckStore.self) private var store
@@ -34,7 +35,7 @@ struct MainWindow: View {
         .toolbar { MainToolbar() }
         .navigationTitle(title)
         .navigationSubtitle(subtitle)
-        .background { ClockDriver(isActive: store.runningAgentCount > 0 || !store.activeTaskIDs.isEmpty) }
+        .background { ClockDriver(isActive: store.isLive) }
         .overlay { CommandPaletteHost() }
         .frame(minWidth: 420, minHeight: 420)
         .onAppear {
@@ -70,36 +71,30 @@ private struct DetailContainer: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        let ids = TaskQuery.ids(for: nav.section, store: store, nav: nav)
         ZStack {
             if let id = nav.openTaskID, let task = store.tasks[id] {
                 TaskDetailView(task: task, namespace: namespace)
                     .transition(.asymmetric(insertion: .opacity, removal: .opacity))
                     .zIndex(1)
             } else {
-                Group {
-                    switch nav.section {
-                    case .active:
-                        ActiveView(taskIDs: ids, namespace: namespace)
-                    case .history:
-                        HistoryView(taskIDs: ids, namespace: namespace)
-                    case .project(let name):
-                        ProjectView(name: name, taskIDs: ids, namespace: namespace)
-                    }
-                }
-                .transition(.opacity)
+                // The filtered list is computed in its own view, so this container (focus,
+                // keys, the open task) doesn't depend on it.
+                SectionList(namespace: namespace)
+                    .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .pulseHost()
         .focusable()
         .focusEffectDisabled()
         .focused($focused)
         .defaultFocus($focused, true)
-        .onKeyPress(.upArrow) { move(-1, in: ids); return .handled }
-        .onKeyPress(.downArrow) { move(1, in: ids); return .handled }
+        .onKeyPress(.upArrow) { move(-1); return .handled }
+        .onKeyPress(.downArrow) { move(1); return .handled }
         .onKeyPress(.return) {
-            if nav.openTaskID == nil, let id = nav.highlightedTaskID ?? ids.first { nav.openTask(id); return .handled }
+            guard nav.openTaskID == nil else { return .ignored }
+            let ids = visibleIDs()
+            let highlighted = nav.highlightedTaskID.flatMap { ids.contains($0) ? $0 : nil }
+            if let id = highlighted ?? ids.first { nav.openTask(id); return .handled }
             return .ignored
         }
         .onKeyPress(.escape) {
@@ -111,40 +106,65 @@ private struct DetailContainer: View {
         .onChange(of: nav.openTaskID) { focused = true }
     }
 
+    /// The task ids currently listed, computed on demand (not a body dependency).
+    private func visibleIDs() -> [String] {
+        TaskQuery.ids(for: nav.section, store: store, nav: nav)
+    }
+
     /// Arrow keys: move the highlight in lists, or between agents in an open task.
-    private func move(_ delta: Int, in ids: [String]) {
+    private func move(_ delta: Int) {
         if let open = nav.openTaskID, let task = store.tasks[open] {
-            let runs = task.runIDs
+            let runs = task.runsInTreeOrder.map(\.id)
             guard !runs.isEmpty else { return }
             let i = nav.inspectedRunID.flatMap { runs.firstIndex(of: $0) } ?? (delta > 0 ? -1 : runs.count)
             let next = runs[max(0, min(runs.count - 1, i + delta))]
             nav.inspect(next, in: open)
             return
         }
+        let ids = visibleIDs()
         guard !ids.isEmpty else { return }
+        // A stale highlight from another section starts from the top or bottom.
         let i = nav.highlightedTaskID.flatMap { ids.firstIndex(of: $0) } ?? (delta > 0 ? -1 : ids.count)
         withAnimation(Theme.snappy) { nav.highlightedTaskID = ids[max(0, min(ids.count - 1, i + delta))] }
+    }
+}
+
+/// The list for the current sidebar section, filters and search.
+private struct SectionList: View {
+    var namespace: Namespace.ID
+    @Environment(DeckStore.self) private var store
+    @Environment(Navigator.self) private var nav
+
+    var body: some View {
+        let tasks = TaskQuery.tasks(for: nav.section, store: store, nav: nav)
+        switch nav.section {
+        case .active:
+            ActiveView(tasks: tasks, namespace: namespace)
+        case .history:
+            HistoryView(tasks: tasks, namespace: namespace)
+        case .project(let name):
+            ProjectView(name: name, tasks: tasks, namespace: namespace)
+        }
     }
 }
 
 /// A project's tasks: active ones as cards, then its history.
 private struct ProjectView: View {
     var name: String
-    var taskIDs: [String]
+    var tasks: [TaskModel]
     var namespace: Namespace.ID
-    @Environment(DeckStore.self) private var store
 
     var body: some View {
-        let active = taskIDs.filter { store.tasks[$0]?.status.isActive == true }
-        let done = taskIDs.filter { store.tasks[$0]?.status.isActive != true }
+        let active = tasks.filter { $0.status.isActive }
+        let done = tasks.filter { !$0.status.isActive }
         if active.isEmpty {
-            HistoryView(taskIDs: done, namespace: namespace)
+            HistoryView(tasks: done, namespace: namespace)
         } else if done.isEmpty {
-            ActiveView(taskIDs: active, namespace: namespace, project: name)
+            ActiveView(tasks: active, namespace: namespace, project: name)
         } else {
             VSplitView {
-                ActiveView(taskIDs: active, namespace: namespace, project: name)
-                HistoryView(taskIDs: done, namespace: namespace)
+                ActiveView(tasks: active, namespace: namespace, project: name)
+                HistoryView(tasks: done, namespace: namespace)
             }
         }
     }

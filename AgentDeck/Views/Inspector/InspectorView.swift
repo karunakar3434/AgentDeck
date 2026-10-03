@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 /// Right-hand panel for one agent run.
 struct InspectorView: View {
@@ -10,7 +11,8 @@ struct InspectorView: View {
         Group {
             if Experiments.has("noinspector") {
                 Color.clear
-            } else if let id = nav.inspectedRunID, let run = store.runs[id] {
+            } else if let id = nav.inspectedRunID, let run = store.runs[id],
+                      nav.openTaskID == nil || run.taskID == nav.openTaskID {
                 RunInspector(run: run)
                     .id(id)
                     .transition(.opacity)
@@ -33,7 +35,8 @@ private struct RunInspector: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
-                timing
+                    .pulseHost()
+                RunTimingBox(run: run)
                 if !run.isMain && !run.prompt.isEmpty { promptSection }
                 if let summary = run.resultSummary, run.status.isFinished { resultSection(summary) }
                 ToolFeed(run: run)
@@ -74,7 +77,40 @@ private struct RunInspector: View {
         }
     }
 
-    private var timing: some View {
+    private var promptSection: some View {
+        DisclosureGroup(isExpanded: $showPrompt) {
+            Text(run.prompt)
+                .font(.callout)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 6)
+        } label: {
+            Label("Prompt", systemImage: "text.quote")
+                .font(.subheadline.weight(.semibold))
+        }
+    }
+
+    private func resultSection(_ summary: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Result", systemImage: run.status == .failed ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(run.status == .failed ? .red : .green)
+            Text(summary)
+                .font(.callout)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background((run.status == .failed ? Color.red : Color.green).opacity(0.07), in: .rect(cornerRadius: 12))
+    }
+}
+
+/// Timing, estimate and counters. Its own view, so clock ticks and tool events redraw
+/// this box rather than the whole inspector (prompt and result text included).
+private struct RunTimingBox: View {
+    var run: RunModel
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 12) {
                 RunProgressRing(run: run, size: 44, lineWidth: 5)
@@ -117,36 +153,9 @@ private struct RunInspector: View {
             .font(.caption.monospacedDigit())
         }
         .padding(12)
-        .drawingGroup()
         .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 12))
     }
 
-    private var promptSection: some View {
-        DisclosureGroup(isExpanded: $showPrompt) {
-            Text(run.prompt)
-                .font(.callout)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 6)
-        } label: {
-            Label("Prompt", systemImage: "text.quote")
-                .font(.subheadline.weight(.semibold))
-        }
-    }
-
-    private func resultSection(_ summary: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("Result", systemImage: run.status == .failed ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(run.status == .failed ? .red : .green)
-            Text(summary)
-                .font(.callout)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(12)
-        .background((run.status == .failed ? Color.red : Color.green).opacity(0.07), in: .rect(cornerRadius: 12))
-    }
 }
 
 /// Live feed of the run's tool calls, newest first.
@@ -200,12 +209,18 @@ private struct ToolRow: View {
                     .font(Theme.smallTimerFont)
                     .foregroundStyle(.tertiary)
             } else {
-                ProgressView().controlSize(.mini)
+                Color.clear.frame(width: 16, height: 12)   // room for the spinner overlay
             }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
         .drawingGroup()
+        // The spinner is AppKit-backed: it can't render inside a drawing group.
+        .overlay(alignment: .trailing) {
+            if tool.endedAt == nil {
+                ProgressView().controlSize(.mini).padding(.trailing, 8)
+            }
+        }
         .background(Color.primary.opacity(0.045), in: .rect(cornerRadius: 6))
     }
 

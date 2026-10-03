@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 /// Task detail: header, agent tree, live timeline.
 struct TaskDetailView: View {
@@ -35,7 +36,8 @@ struct TaskDetailView: View {
         .task(id: task.id) {
             showChart = false
             await Task.yield()
-            try? await Task.sleep(for: .milliseconds(30))
+            // After the open spring (≈0.25 s), so building the chart doesn't drop its frames.
+            try? await Task.sleep(for: .milliseconds(300))
             withAnimation(.easeOut(duration: 0.18)) { showChart = true }
         }
         .background {

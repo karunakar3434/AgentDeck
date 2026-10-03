@@ -41,4 +41,6 @@ xcrun xctrace record --template "$TEMPLATE" --time-limit "${SECONDS_LIMIT}s" --o
   --launch -- "$APP/Contents/MacOS/AgentDeck" -mock -stress -automation 2>&1 | tail -3
 kill $DRIVER 2>/dev/null || true
 pkill -x AgentDeck 2>/dev/null || true
+# xctrace leaves multi-GB kernel traces in the temp folder; remove them once nothing is recording.
+pgrep -x xctrace >/dev/null || rm -f "${TMPDIR:-/tmp/}"instruments*.ktrace
 echo "$OUT"

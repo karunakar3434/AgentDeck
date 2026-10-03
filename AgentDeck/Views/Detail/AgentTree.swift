@@ -1,17 +1,17 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 /// Main agent, its subagents, then nested subagents, as an indented tree.
 struct AgentTree: View {
     var task: TaskModel
-    @Environment(DeckStore.self) private var store
     @Environment(Navigator.self) private var nav
 
     var body: some View {
-        let ordered = orderedRuns()
+        let ordered = task.runsInTreeOrder
         LazyVStack(alignment: .leading, spacing: 2) {
             ForEach(ordered, id: \.id) { run in
-                AgentRow(run: run, isSelected: nav.inspectedRunID == run.id && nav.showInspector)
+                AgentRow(run: run, task: task, isSelected: nav.inspectedRunID == run.id && nav.showInspector)
                     .padding(.leading, CGFloat(run.depth) * 18)
                     .contentShape(.rect)
                     .onTapGesture { nav.inspect(run.id, in: task.id) }
@@ -19,34 +19,18 @@ struct AgentTree: View {
             }
         }
         .animation(Theme.spring, value: ordered.map(\.id))
-    }
-
-    /// Depth-first order: each run followed by its children, children in start order.
-    private func orderedRuns() -> [RunModel] {
-        let all = store.runs(of: task)
-        var children: [String: [RunModel]] = [:]
-        var roots: [RunModel] = []
-        let ids = Set(all.map(\.id))
-        for r in all {
-            if let p = r.parentRunID, ids.contains(p) { children[p, default: []].append(r) } else { roots.append(r) }
-        }
-        var out: [RunModel] = []
-        out.reserveCapacity(all.count)
-        func visit(_ r: RunModel) {
-            out.append(r)
-            for c in (children[r.id] ?? []).sorted(by: { $0.startedAt < $1.startedAt }) { visit(c) }
-        }
-        for r in roots.sorted(by: { ($0.isMain ? 0 : 1, $0.startedAt) < ($1.isMain ? 0 : 1, $1.startedAt) }) { visit(r) }
-        return out
+        .pulseHost()
     }
 }
 
 /// One agent in the tree: avatar, type, description, model, activity, timing.
 struct AgentRow: View {
     var run: RunModel
+    var task: TaskModel
     var isSelected: Bool
-    @Environment(DeckStore.self) private var store
     @State private var hovering = false
+
+    private static let timingWidth: CGFloat = 104
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -62,7 +46,7 @@ struct AgentRow: View {
                     Text(run.displayName)
                         .font(.callout.weight(.semibold))
                         .lineLimit(1)
-                    ModelBadge(model: run.model, parentModel: store.tasks[run.taskID]?.mainModel, compact: true)
+                    ModelBadge(model: run.model, parentModel: task.mainModel, compact: true)
                     if run.isBackground {
                         Image(systemName: "moon.fill")
                             .font(.caption2)
@@ -70,7 +54,7 @@ struct AgentRow: View {
                             .help("Running in the background")
                     }
                 }
-                Text(run.isMain ? (store.tasks[run.taskID]?.title ?? "") : run.description)
+                Text(run.isMain ? task.title : run.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -85,27 +69,43 @@ struct AgentRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            VStack(alignment: .trailing, spacing: 2) {
-                HStack(spacing: 6) {
-                    ElapsedText(run: run, font: Theme.smallTimerFont)
-                    if !run.isMain {
-                        RunProgressRing(run: run, size: 16, lineWidth: 2.5)
-                    }
-                }
-                if !run.isMain {
-                    EstimateText(run: run)
-                }
-            }
+            Color.clear.frame(width: Self.timingWidth, height: 1)   // room for the timing overlay
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        // Live rows: flatten so a status or activity change redraws one GPU-backed layer.
+        .transaction { $0.animation = nil }
+        // Live rows: flatten so a status or activity change redraws one GPU-backed layer;
+        // the once-a-second timing column stays outside it.
         .drawingGroup()
+        .overlay(alignment: .trailing) {
+            RunTimingColumn(run: run)
+                .frame(width: Self.timingWidth, alignment: .trailing)
+                .padding(.trailing, 8)
+        }
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.16) : (hovering ? Color.primary.opacity(0.05) : .clear))
         }
         .onHover { hovering = $0 }
         .animation(Theme.snappy, value: isSelected)
+    }
+}
+
+/// Elapsed, progress ring and estimate for a run (clock-driven).
+private struct RunTimingColumn: View {
+    var run: RunModel
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            HStack(spacing: 6) {
+                ElapsedText(run: run, font: Theme.smallTimerFont)
+                if !run.isMain {
+                    RunProgressRing(run: run, size: 16, lineWidth: 2.5)
+                }
+            }
+            if !run.isMain {
+                EstimateText(run: run)
+            }
+        }
     }
 }

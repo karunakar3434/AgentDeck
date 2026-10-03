@@ -1,9 +1,12 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 /// Owns the store, navigation, notifications and the active agent source.
 @MainActor @Observable
 final class AppModel {
+    static let shared = AppModel()
+
     let store = DeckStore()
     let nav = Navigator()
     let notifications = Notifier()
@@ -20,13 +23,23 @@ final class AppModel {
     private var source: (any AgentSource)?
     private var consumer: Task<Void, Never>?
 
+    private var prepared = false
+
+    /// Runs before launch completes (app delegate), so a notification that launched the
+    /// app finds its delegate in place.
+    func prepareForLaunch() {
+        guard !prepared else { return }
+        prepared = true
+        notifications.onOpenTask = { [weak self] id in self?.openFromNotification(id) }
+        notifications.activate()
+    }
+
     func start() {
         guard !started else { return }
         started = true
+        prepareForLaunch()
         DebugAutomation.install(app: self)
         ReduceMotion.startObserving()
-        notifications.activate()
-        notifications.onOpenTask = { [weak self] id in self?.openFromNotification(id) }
         store.onGlanceChange = { [weak self] _ in self?.updateDockBadge() }
         store.onEvent = { [weak self] event in
             guard let self else { return }
@@ -54,6 +67,7 @@ final class AppModel {
         store.reset()
         nav.openTaskID = nil
         nav.inspectedRunID = nil
+        nav.highlightedTaskID = nil
 
         let d = UserDefaults.standard
         let new: any AgentSource
@@ -72,24 +86,35 @@ final class AppModel {
             for await update in await new.updates() {
                 if Task.isCancelled { break }
                 store.apply(update)
+                self?.resolvePendingOpen()
             }
         }
     }
 
     private var lastBadge: Int = -1
 
-    private func updateDockBadge() {
+    func updateDockBadge() {
         let n = UserDefaults.standard.bool(forKey: SettingsKey.dockBadge) && !Experiments.has("nodock") ? store.glanceRunningCount : 0
         guard n != lastBadge else { return }
         lastBadge = n
         NSApp.dockTile.badgeLabel = n > 0 ? "\(n)" : nil
     }
 
-    private func openFromNotification(_ id: String) {
-        guard let t = store.tasks[id] else { return }
-        nav.section = t.status.isActive ? .active : .history
-        nav.openTask(id)
+    /// A task to open once it has loaded (a notification clicked at launch or mid-restart).
+    private var pendingOpenTaskID: String?
+
+    func openFromNotification(_ id: String) {
         openMainWindow?()
         NSApp.activate()
+        guard let t = store.tasks[id] else { pendingOpenTaskID = id; return }
+        pendingOpenTaskID = nil
+        nav.section = t.status.isActive ? .active : .history
+        nav.openTask(id)
+    }
+
+    private func resolvePendingOpen() {
+        guard let id = pendingOpenTaskID else { return }
+        if store.tasks[id] != nil { openFromNotification(id) }
+        else if store.initialLoadComplete { pendingOpenTaskID = nil }  // gone from the window
     }
 }

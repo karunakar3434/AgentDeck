@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 /// A colored status dot. Running dots breathe gently unless Reduce Motion is on.
 ///
@@ -11,6 +12,19 @@ struct StatusDot: View {
     var pulsing: Bool = false
     var size: CGFloat = 8
 
+    var body: some View {
+        if pulsing {
+            PulsingDot(color: color, size: size)
+        } else {
+            Circle().fill(color).frame(width: size, height: size)
+        }
+    }
+}
+
+/// A dot that publishes its position so the nearest `.pulseHost()` draws its ring.
+private struct PulsingDot: View {
+    var color: Color
+    var size: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulseID = UUID()
 
@@ -19,14 +33,14 @@ struct StatusDot: View {
             .fill(color)
             .frame(width: size, height: size)
             .anchorPreference(key: PulseAnchors.self, value: .bounds) { anchor in
-                pulsing && !reduceMotion && !Experiments.has("nopulse")
+                !reduceMotion && !Experiments.has("nopulse")
                     ? [PulseAnchors.Item(id: pulseID, anchor: anchor, color: color)] : []
             }
     }
 }
 
 struct PulseAnchors: PreferenceKey {
-    struct Item: Identifiable {
+    struct Item: Identifiable, Equatable {
         let id: UUID
         let anchor: Anchor<CGRect>
         let color: Color
@@ -36,7 +50,9 @@ struct PulseAnchors: PreferenceKey {
 }
 
 extension View {
-    /// Draws the pulse rings for every pulsing `StatusDot` inside this view, on top of it.
+    /// Draws the pulse rings for every pulsing `StatusDot` inside this view, on top of it,
+    /// and stops them from reaching an outer host. Hosts sit inside scroll views, so
+    /// scrolling moves the rings with their layer instead of repositioning each one.
     func pulseHost() -> some View {
         overlayPreferenceValue(PulseAnchors.self) { items in
             GeometryReader { geo in
@@ -50,6 +66,7 @@ extension View {
             .allowsHitTesting(false)
             .clipped()
         }
+        .transformPreference(PulseAnchors.self) { $0 = [] }
     }
 }
 
@@ -206,10 +223,18 @@ struct AgentAvatar: View {
     var size: CGFloat = 22
     /// Running agents breathe; dense lists (task cards) turn it off to keep animation cost flat.
     var pulsing = true
+    /// Tooltips cost an update per avatar; the dense card strip turns them off.
+    var showsHelp = true
 
     var body: some View {
+        if showsHelp { avatar.help("\(run.displayName): \(run.description)") } else { avatar }
+    }
+
+    /// Reads only near-static run fields; the status lives in `RunStatusDot`, so a status
+    /// change re-evaluates one small circle instead of the symbol image and backgrounds.
+    private var avatar: some View {
         let tint = AgentGlyph.color(for: run.agentType, isMain: run.isMain)
-        Image(systemName: AgentGlyph.symbol(for: run.agentType, isMain: run.isMain))
+        return Image(systemName: AgentGlyph.symbol(for: run.agentType, isMain: run.isMain))
             .font(.system(size: size * 0.48, weight: .semibold))
             .foregroundStyle(tint)
             .frame(width: size, height: size)
@@ -220,18 +245,36 @@ struct AgentAvatar: View {
                     .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
             }
             .overlay(alignment: .bottomTrailing) {
-                StatusDot(color: run.status.color, pulsing: pulsing && run.status == .running, size: size * 0.34)
-                    .overlay(Circle().stroke(.background, lineWidth: 1.5))
+                RunStatusDot(run: run, pulsing: pulsing, size: size * 0.34)
                     .offset(x: 1, y: 1)
             }
-            .help("\(run.displayName): \(run.description)")
+    }
+}
+
+private struct RunStatusDot: View {
+    var run: RunModel
+    var pulsing: Bool
+    var size: CGFloat
+
+    var body: some View {
+        StatusDot(color: run.status.color, pulsing: pulsing && run.status == .running, size: size)
+            .overlay(Circle().stroke(.background, lineWidth: 1.5))
     }
 }
 
 /// Stable per-agent-type symbol and tint.
 enum AgentGlyph {
+    private static var symbols: [String: String] = [:]
+
     static func symbol(for type: String, isMain: Bool) -> String {
         if isMain { return "sparkle" }
+        if let s = symbols[type] { return s }
+        let s = resolveSymbol(type)
+        symbols[type] = s
+        return s
+    }
+
+    private static func resolveSymbol(_ type: String) -> String {
         switch type.lowercased() {
         case "explore": return "binoculars.fill"
         case "plan": return "map.fill"

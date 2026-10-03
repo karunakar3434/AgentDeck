@@ -1,6 +1,7 @@
 import Foundation
 import UserNotifications
 import AgentDeckCore
+import AgentDeckState
 
 /// Opt-in native notifications. Clicking one opens the task.
 @MainActor @Observable
@@ -41,6 +42,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     func handle(_ event: DeckEvent, store: DeckStore) {
         let d = UserDefaults.standard
+        // Simulated agents never post real notifications.
+        if case .taskFinished(let id, _) = event, store.tasks[id]?.source == "mock" { return }
+        if case .subagentFailed(let id, _) = event, store.tasks[id]?.source == "mock" { return }
         switch event {
         case .taskFinished(let id, let failed):
             guard d.bool(forKey: SettingsKey.notifyTaskFinished), let t = store.tasks[id] else { return }

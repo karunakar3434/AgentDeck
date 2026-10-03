@@ -1,16 +1,16 @@
 import SwiftUI
 import AgentDeckCore
+import AgentDeckState
 
 /// Tasks that finished within the history window, with actual vs estimated durations.
 struct HistoryView: View {
-    var taskIDs: [String]
+    var tasks: [TaskModel]
     var namespace: Namespace.ID
 
-    @Environment(DeckStore.self) private var store
     @Environment(Navigator.self) private var nav
 
     var body: some View {
-        if taskIDs.isEmpty {
+        if tasks.isEmpty {
             ContentUnavailableView {
                 Label("No finished tasks", systemImage: "clock.arrow.circlepath")
             } description: {
@@ -24,13 +24,11 @@ struct HistoryView: View {
                     LazyVStack(alignment: .leading, spacing: 4, pinnedViews: .sectionHeaders) {
                         ForEach(groups, id: \.title) { group in
                             Section {
-                                ForEach(group.ids, id: \.self) { id in
-                                    if let task = store.tasks[id] {
-                                        HistoryRow(task: task, isHighlighted: nav.highlightedTaskID == id)
-                                            .id(id)
-                                            .contentShape(.rect)
-                                            .onTapGesture { nav.openTask(id) }
-                                    }
+                                ForEach(group.tasks) { task in
+                                    HistoryRow(task: task, isHighlighted: nav.highlightedTaskID == task.id)
+                                        .id(task.id)
+                                        .contentShape(.rect)
+                                        .onTapGesture { nav.openTask(task.id) }
                                 }
                             } header: {
                                 Text(group.title)
@@ -45,7 +43,7 @@ struct HistoryView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 16)
                 }
-                .animation(Theme.spring, value: taskIDs)
+                .animation(Theme.spring, value: tasks.map(\.id))
                 .onChange(of: nav.highlightedTaskID) { _, id in
                     if let id { withAnimation(Theme.snappy) { proxy.scrollTo(id) } }
                 }
@@ -53,17 +51,16 @@ struct HistoryView: View {
         }
     }
 
-    private var groups: [(title: String, ids: [String])] {
+    private var groups: [(title: String, tasks: [TaskModel])] {
         let cal = Calendar.current
-        var today: [String] = [], yesterday: [String] = [], older: [String] = []
-        for id in taskIDs {
-            guard let t = store.tasks[id] else { continue }
+        var today: [TaskModel] = [], yesterday: [TaskModel] = [], older: [TaskModel] = []
+        for t in tasks {
             let d = t.endedAt ?? t.lastActivityAt
-            if cal.isDateInToday(d) { today.append(id) }
-            else if cal.isDateInYesterday(d) { yesterday.append(id) }
-            else { older.append(id) }
+            if cal.isDateInToday(d) { today.append(t) }
+            else if cal.isDateInYesterday(d) { yesterday.append(t) }
+            else { older.append(t) }
         }
-        return [("Today", today), ("Yesterday", yesterday), ("Earlier", older)].filter { !$0.ids.isEmpty }
+        return [("Today", today), ("Yesterday", yesterday), ("Earlier", older)].filter { !$0.tasks.isEmpty }
     }
 }
 

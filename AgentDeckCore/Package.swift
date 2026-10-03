@@ -6,6 +6,8 @@ let package = Package(
     platforms: [.macOS(.v26)],
     products: [
         .library(name: "AgentDeckCore", targets: ["AgentDeckCore"]),
+        // Main-actor observable mirror of the core's state, used by the app's views.
+        .library(name: "AgentDeckState", targets: ["AgentDeckState"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.9.0"),
@@ -14,6 +16,14 @@ let package = Package(
         .target(
             name: "AgentDeckCore",
             dependencies: [.product(name: "GRDB", package: "GRDB.swift")]
+        ),
+        .target(
+            name: "AgentDeckState",
+            dependencies: ["AgentDeckCore"]
+        ),
+        .testTarget(
+            name: "AgentDeckStateTests",
+            dependencies: ["AgentDeckState", "AgentDeckCore"]
         ),
         .testTarget(
             name: "AgentDeckCoreTests",
