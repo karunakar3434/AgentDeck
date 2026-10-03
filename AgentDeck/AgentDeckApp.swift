@@ -30,6 +30,7 @@ struct AgentDeckApp: App {
                 .environment(app.nav)
         } label: {
             MenuBarLabel()
+                .environment(app)
                 .environment(app.store)
                 .task { app.start() }
         }

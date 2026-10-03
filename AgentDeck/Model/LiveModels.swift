@@ -113,6 +113,9 @@ final class TaskModel: Identifiable {
     private(set) var gitBranch: String?
     /// Run ids, main agent first then subagents in start order.
     private(set) var runIDs: [String]
+    /// The run models themselves, in `runIDs` order. Views read these instead of the
+    /// store's dictionary so a new run elsewhere doesn't invalidate this task's views.
+    private(set) var runs: [RunModel] = []
     /// Derived, kept here so cards don't need to read every run.
     private(set) var runningCount: Int
     private(set) var eta: Date?
@@ -156,6 +159,12 @@ final class TaskModel: Identifiable {
     private func assign<V: Equatable>(_ kp: ReferenceWritableKeyPath<TaskModel, V>, _ v: V) {
         if self[keyPath: kp] != v { self[keyPath: kp] = v }
     }
+
+    func setRuns(_ models: [RunModel]) {
+        if models.count != runs.count || zip(models, runs).contains(where: { $0 !== $1 }) { runs = models }
+    }
+
+    var subagents: ArraySlice<RunModel> { runs.dropFirst() }
 
     private static func families(_ s: TaskSnapshot) -> [ModelFamily] {
         Array(Set(s.runs.map { $0.model.id == nil ? s.mainModel.family : $0.model.family })).sorted()

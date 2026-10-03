@@ -103,6 +103,7 @@ private struct RunInspector: View {
                     Text("Tool calls").foregroundStyle(.secondary)
                     Text("\(run.toolCallCount)")
                         .contentTransition(.numericText(value: Double(run.toolCallCount)))
+                        .animation(Theme.snappy, value: run.toolCallCount)
                 }
                 if let tokens = run.tokens, tokens.total > 0 {
                     GridRow {

@@ -22,8 +22,8 @@ enum LaunchMetrics {
         reported = true
         let ms = Int(Date().timeIntervalSince(start) * 1000)
         log.notice("first window after \(ms, privacy: .public) ms")
-        #if DEBUG
-        try? "\(ms)\n".write(toFile: NSTemporaryDirectory() + "agentdeck-launch-ms.txt", atomically: true, encoding: .utf8)
-        #endif
+        if DebugAutomation.isEnabled {
+            try? "\(ms)\n".write(toFile: NSTemporaryDirectory() + "agentdeck-launch-ms.txt", atomically: true, encoding: .utf8)
+        }
     }
 }

@@ -11,6 +11,9 @@ final class AppModel {
     private(set) var isMock = CommandLine.arguments.contains("-mock")
     private(set) var isStress = CommandLine.arguments.contains("-stress")
 
+    /// Opens (or brings forward) the main window; set by a view that has `openWindow`.
+    var openMainWindow: (() -> Void)?
+
     private var started = false
     private var source: (any AgentSource)?
     private var consumer: Task<Void, Never>?
@@ -18,9 +21,7 @@ final class AppModel {
     func start() {
         guard !started else { return }
         started = true
-        #if DEBUG
         DebugAutomation.install(app: self)
-        #endif
         ReduceMotion.startObserving()
         notifications.activate()
         notifications.onOpenTask = { [weak self] id in self?.openFromNotification(id) }
@@ -86,9 +87,7 @@ final class AppModel {
         guard let t = store.tasks[id] else { return }
         nav.section = t.status.isActive ? .active : .history
         nav.openTask(id)
+        openMainWindow?()
         NSApp.activate()
-        if let w = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }) {
-            w.makeKeyAndOrderFront(nil)
-        }
     }
 }

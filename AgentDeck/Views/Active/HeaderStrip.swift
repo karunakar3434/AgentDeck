@@ -27,6 +27,7 @@ struct HeaderStrip: View {
         StatTile(title: "Active tasks", symbol: "bolt.horizontal.fill", tint: .blue) {
             Text("\(activeCount)")
                 .contentTransition(.numericText(value: Double(activeCount)))
+                .animation(Theme.spring, value: activeCount)
         }
     }
 
@@ -34,6 +35,7 @@ struct HeaderStrip: View {
         StatTile(title: "Running agents", symbol: "person.2.fill", tint: .green) {
             Text("\(store.runningAgentCount)")
                 .contentTransition(.numericText(value: Double(store.runningAgentCount)))
+                .animation(Theme.spring, value: store.runningAgentCount)
         }
     }
 

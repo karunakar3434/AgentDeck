@@ -1,10 +1,10 @@
-#if DEBUG
 import SwiftUI
 import AppKit
 import AgentDeckCore
 
-/// Debug-only remote control so the app can be driven and screenshotted from the
-/// command line without Screen Recording or Accessibility permissions.
+/// Remote control so the app can be driven and screenshotted from the command line
+/// without Screen Recording or Accessibility permissions. Active in Debug builds, and in
+/// Release builds launched with `-automation` (used for Instruments profiling).
 ///
 /// `scripts/debugctl <command> [args…]` posts a distributed notification named
 /// `com.karun.AgentDeck.debug` with `userInfo["args"]`. Snapshots are rendered by the
@@ -13,8 +13,16 @@ import AgentDeckCore
 enum DebugAutomation {
     private static var observer: NSObjectProtocol?
 
+    static var isEnabled: Bool {
+        #if DEBUG
+        true
+        #else
+        CommandLine.arguments.contains("-automation")
+        #endif
+    }
+
     static func install(app: AppModel) {
-        guard observer == nil else { return }
+        guard isEnabled, observer == nil else { return }
         observer = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.karun.AgentDeck.debug"), object: nil, queue: .main
         ) { note in
@@ -215,4 +223,3 @@ enum DebugAutomation {
         }
     }
 }
-#endif

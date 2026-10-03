@@ -74,19 +74,16 @@ struct TaskCard: View {
 struct AvatarStack: View {
     var task: TaskModel
     var limit = 12
-    @Environment(DeckStore.self) private var store
 
     var body: some View {
-        let ids = task.runIDs
+        let runs = task.runs
         HStack(spacing: -5) {
-            ForEach(ids.prefix(limit), id: \.self) { id in
-                if let run = store.runs[id] {
-                    AgentAvatar(run: run, size: 22)
-                        .transition(.scale.combined(with: .opacity))
-                }
+            ForEach(runs.prefix(limit)) { run in
+                AgentAvatar(run: run, size: 22, pulsing: false)
+                    .transition(.scale.combined(with: .opacity))
             }
-            if ids.count > limit {
-                Text("+\(ids.count - limit)")
+            if runs.count > limit {
+                Text("+\(runs.count - limit)")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 26, height: 22)
@@ -94,6 +91,6 @@ struct AvatarStack: View {
                     .padding(.leading, 8)
             }
         }
-        .animation(Theme.spring, value: ids)
+        .animation(Theme.spring, value: task.runIDs)
     }
 }

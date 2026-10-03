@@ -32,7 +32,7 @@ final class DeckStore {
     func task(_ id: String) -> TaskModel? { tasks[id] }
     func run(_ id: String) -> RunModel? { runs[id] }
 
-    func runs(of task: TaskModel) -> [RunModel] { task.runIDs.compactMap { runs[$0] } }
+    func runs(of task: TaskModel) -> [RunModel] { task.runs }
 
     func setError(_ message: String?) { loadError = message }
 
@@ -59,6 +59,7 @@ final class DeckStore {
                 structureChanged = true
             }
         }
+        var newRuns: [String: RunModel] = [:]
 
         for snap in update.changed {
             if let model = tasks[snap.id] {
@@ -81,8 +82,12 @@ final class DeckStore {
                 structureChanged = true
             }
 
+            let previousRunIDs = Set(tasks[snap.id]?.runs.map(\.id) ?? [])
+            var models: [RunModel] = []
+            models.reserveCapacity(snap.runs.count)
             for r in snap.runs {
-                if let model = runs[r.id] {
+                if let model = runs[r.id] ?? newRuns[r.id] {
+                    models.append(model)
                     let old = model.status
                     model.apply(r)
                     if old != r.status {
@@ -92,11 +97,17 @@ final class DeckStore {
                         }
                     }
                 } else {
-                    runs[r.id] = RunModel(r)
+                    let model = RunModel(r)
+                    newRuns[r.id] = model
+                    models.append(model)
                     structureChanged = true
                 }
             }
+            // Drop runs that disappeared from this task (e.g. an orphan merged into its Agent run).
+            for gone in previousRunIDs.subtracting(snap.runs.map(\.id)) { runs.removeValue(forKey: gone) }
+            tasks[snap.id]?.setRuns(models)
         }
+        if !newRuns.isEmpty { runs.merge(newRuns) { a, _ in a } }
 
         if update.initialLoadComplete && !initialLoadComplete { initialLoadComplete = true; structureChanged = true }
         if structureChanged { rebuildIndexes() }

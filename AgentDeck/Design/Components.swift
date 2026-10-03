@@ -129,6 +129,8 @@ struct ProgressBar: View {
 struct AgentAvatar: View {
     var run: RunModel
     var size: CGFloat = 22
+    /// Running agents breathe; dense lists (task cards) turn it off to keep animation cost flat.
+    var pulsing = true
 
     var body: some View {
         let tint = AgentGlyph.color(for: run.agentType, isMain: run.isMain)
@@ -138,7 +140,7 @@ struct AgentAvatar: View {
             .frame(width: size, height: size)
             .background(tint.opacity(0.15), in: .circle)
             .overlay(alignment: .bottomTrailing) {
-                StatusDot(color: run.status.color, pulsing: run.status == .running, size: size * 0.34)
+                StatusDot(color: run.status.color, pulsing: pulsing && run.status == .running, size: size * 0.34)
                     .overlay(Circle().stroke(.background, lineWidth: 1.5))
                     .offset(x: 1, y: 1)
             }

@@ -4,6 +4,8 @@ import AgentDeckCore
 /// The menu bar item's label: a glyph and the running-agent count.
 struct MenuBarLabel: View {
     @Environment(DeckStore.self) private var store
+    @Environment(AppModel.self) private var app
+    @Environment(\.openWindow) private var openWindow
     @AppStorage(SettingsKey.menuBarCount) private var showCount = true
 
     var body: some View {
@@ -15,6 +17,7 @@ struct MenuBarLabel: View {
             }
         }
         .accessibilityLabel(n == 0 ? "AgentDeck, no agents running" : "AgentDeck, \(n) agents running")
+        .onAppear { app.openMainWindow = { openWindow(id: "main") } }
     }
 }
 
@@ -34,6 +37,7 @@ struct MenuBarPopover: View {
                     .font(.headline.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .contentTransition(.numericText(value: Double(store.runningAgentCount)))
+                    .animation(Theme.spring, value: store.runningAgentCount)
             }
             .padding(.horizontal, 14)
             .padding(.top, 12)
