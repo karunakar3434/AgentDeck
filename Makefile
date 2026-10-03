@@ -6,7 +6,7 @@ DEBUG_APP    := $(DERIVED)/Build/Products/Debug/AgentDeck.app
 RELEASE_APP  := $(DERIVED)/Build/Products/Release/AgentDeck.app
 XCODEBUILD   := xcodebuild -project $(PROJECT) -scheme $(SCHEME) -derivedDataPath $(DERIVED) -destination 'platform=macOS,arch=arm64' -quiet
 
-.PHONY: all build release run mock test install uninstall clean kill
+.PHONY: all build release run mock test install uninstall clean kill debugctl
 
 all: build
 
@@ -40,3 +40,10 @@ uninstall: kill
 clean:
 	rm -rf $(DERIVED)
 	cd AgentDeckCore && swift package clean
+
+# Debug remote control (Debug builds only): build/debugctl snapshot /tmp/x.png
+debugctl: $(DERIVED)/debugctl
+
+$(DERIVED)/debugctl: scripts/debugctl.swift
+	@mkdir -p $(DERIVED)
+	swiftc -O scripts/debugctl.swift -o $(DERIVED)/debugctl
