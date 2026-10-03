@@ -19,12 +19,13 @@ private func run(_ id: String, task: String, parent: String? = nil, type: String
 }
 
 private func task(_ id: String, status: TaskStatus = .running, project: String = "AgentDeck",
-                  runs: [AgentRunSnapshot]? = nil, source: String = "claude-code") -> TaskSnapshot {
+                  runs: [AgentRunSnapshot]? = nil, source: String = "claude-code", kind: ProjectKind? = nil) -> TaskSnapshot {
     let main = run("main:\(id)", task: id, status: status.isActive ? .running : .done)
     return TaskSnapshot(
         id: id, source: source, projectName: project, projectPath: "/p/\(project)", title: "Task \(id)", status: status,
         startedAt: t0, lastActivityAt: t0.addingTimeInterval(5), endedAt: status.isActive || status == .idle ? nil : t0.addingTimeInterval(60),
-        mainModel: ModelInfo(id: "claude-opus-5-5", source: .transcript), gitBranch: "main", runs: runs ?? [main])
+        mainModel: ModelInfo(id: "claude-opus-5-5", source: .transcript), gitBranch: "main", runs: runs ?? [main],
+        projectKind: kind)
 }
 
 @MainActor
@@ -42,8 +43,47 @@ private func task(_ id: String, status: TaskStatus = .running, project: String =
         #expect(store.runningAgentCount == 2)
         #expect(store.tasks["a"]?.runs.map(\.runID) == ["main:a", "x"])
         #expect(store.runs[RunKey.make(task: "a", run: "x")]?.parentRunID == RunKey.make(task: "a", run: "main:a"))
-        #expect(store.projects == ["AgentDeck"])
+        #expect(store.projects == ["AgentDeck", "Others"])
         #expect(store.agentTypes == ["Explore"])
+    }
+
+    @Test func sidebarListsGroupsThenFoldersThenOthers() {
+        let store = DeckStore()
+        store.setWorkflowGroups(["GmailMonitor", "PubgMontages", "TradingBot"])
+        // Groups and Others are listed before any task joins them.
+        #expect(store.projects == ["GmailMonitor", "PubgMontages", "TradingBot", "Others"])
+
+        store.apply(DeckUpdate(changed: [
+            task("a", project: "localbiz", kind: .folder),
+            task("b", project: "GmailMonitor", kind: .workflow),
+            task("c", status: .done, project: "AgentDeck", kind: .folder),
+            task("d", project: "Others", kind: .others),
+            task("e", status: .done, project: "TradingBot", kind: .folder),   // a folder named like a group joins it
+        ], initialLoadComplete: true))
+        #expect(store.projects == ["GmailMonitor", "PubgMontages", "TradingBot", "AgentDeck", "localbiz", "Others"])
+        #expect(store.activeCountByProject == ["localbiz": 1, "GmailMonitor": 1, "Others": 1])
+        #expect(store.projectKind(of: "PubgMontages") == .workflow)
+        #expect(store.projectKind(of: "localbiz") == .folder)
+        #expect(store.projectKind(of: "Others") == .others)
+        #expect(store.tasks["a"]?.projectKind == .folder)
+
+        // A running task changes entry: the list and the badges follow.
+        store.apply(DeckUpdate(changed: [task("a", project: "PubgMontages", kind: .workflow)]))
+        #expect(store.projects == ["GmailMonitor", "PubgMontages", "TradingBot", "AgentDeck", "Others"])
+        #expect(store.activeCountByProject == ["PubgMontages": 1, "GmailMonitor": 1, "Others": 1])
+
+        // Reordered groups; a reset keeps them.
+        store.setWorkflowGroups(["TradingBot", "GmailMonitor"])
+        #expect(store.projects == ["TradingBot", "GmailMonitor", "AgentDeck", "Others"])
+        store.reset()
+        #expect(store.projects == ["TradingBot", "GmailMonitor", "Others"])
+    }
+
+    @Test func snapshotsWithoutAKindAreFolders() {
+        let store = DeckStore()
+        store.apply(DeckUpdate(changed: [task("a", project: "AgentDeck")]))
+        #expect(store.tasks["a"]?.projectKind == .folder)
+        #expect(store.projects == ["AgentDeck", "Others"])
     }
 
     @Test func modelsKeepIdentityAcrossUpdates() {

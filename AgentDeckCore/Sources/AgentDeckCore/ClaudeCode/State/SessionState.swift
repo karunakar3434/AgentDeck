@@ -177,6 +177,10 @@ struct SessionState: Sendable {
     var usedDefinitions = false
     /// Peer handback reports delivered to the parent, by sending agent id (latest wins).
     var peerReports: [String: String] = [:]
+    /// Skills invoked in any of the session's files (Skill tool calls, slash commands); workflow signals.
+    var skills: Set<String> = []
+    /// Names of the tools called in any of the session's files; workflow signals.
+    var toolNames: Set<String> = []
 
     struct PendingNotice: Sendable {
         var notice: TaskNotice
@@ -204,5 +208,11 @@ struct SessionState: Sendable {
         guard let ts else { return }
         if startedAt.map({ ts < $0 }) ?? true { startedAt = ts }
         if lastActivityAt.map({ ts > $0 }) ?? true { lastActivityAt = ts }
+    }
+
+    /// Adds a workflow signal, keeping at most `TaskSignals.listLimit` names (the first ones seen).
+    static func note(_ name: String, in set: inout Set<String>) {
+        guard !name.isEmpty, set.count < TaskSignals.listLimit, !set.contains(name) else { return }
+        set.insert(TextUtil.clamp(name, limit: TextUtil.fieldLimit))
     }
 }

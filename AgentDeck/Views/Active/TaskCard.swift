@@ -29,7 +29,7 @@ struct TaskCard: View {
             }
 
             HStack(spacing: 6) {
-                Label(task.projectName, systemImage: "folder")
+                Label(task.projectName, systemImage: task.projectKind.symbol())
                     .lineLimit(1)
                 if let branch = task.gitBranch, !branch.isEmpty, branch != "HEAD" {
                     Label(branch, systemImage: "arrow.triangle.branch")

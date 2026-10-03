@@ -87,7 +87,18 @@ enum DebugAutomation {
         case "mock":
             app.setMock(rest.first != "off", stress: rest.first == "stress")
         case "settings":
+            // settings [general|groups|notifications|data]
+            if let tab = rest.first.flatMap(SettingsTab.init(rawValue:)) { app.settingsTab = tab }
             app.openSettingsWindow?()
+        case "sidebar":
+            // The sidebar's project entries in order, with kind, active count and task count.
+            let path = rest.first ?? "/tmp/agentdeck-sidebar.txt"
+            let all = store.activeTasks + store.inactiveTasks
+            let lines = store.projects.map { name in
+                "\(name) | \(store.projectKind(of: name).rawValue) | active=\(store.activeCountByProject[name] ?? 0) "
+                    + "tasks=\(all.count { $0.projectName == name })"
+            }
+            try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
         case "state":
             let path = rest.first ?? "/tmp/agentdeck-state.txt"
             let s = """
@@ -101,7 +112,7 @@ enum DebugAutomation {
             var lines: [String] = []
             for id in store.activeTaskIDs + store.inactiveTaskIDs {
                 guard let t = store.tasks[id] else { continue }
-                lines.append("TASK \(t.status.rawValue) \(t.projectName) | \(t.title) | model=\(t.mainModel.id ?? "-") runs=\(t.runIDs.count)")
+                lines.append("TASK \(t.status.rawValue) \(t.projectName) (\(t.projectKind.rawValue)) | \(t.title) | model=\(t.mainModel.id ?? "-") runs=\(t.runIDs.count) path=\(t.projectPath)")
                 for rid in t.runIDs {
                     guard let r = store.runs[rid] else { continue }
                     let est = r.estimate.map { "\(Int($0.seconds))s/\($0.confidence.rawValue)/\($0.sampleCount)" } ?? "-"

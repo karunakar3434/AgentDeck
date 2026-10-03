@@ -54,6 +54,8 @@ final class MockWorld {
 
     private var rng: SeededRandom
     private var queue = MockEventQueue()
+    /// Decides each task's sidebar entry, like the live source does.
+    private var classifier: WorkflowClassifier
     /// Tasks by handle (creation order); nil once pruned. Events refer to tasks by
     /// handle so they stay plain data.
     private var slots: [MockTask?] = []
@@ -67,11 +69,12 @@ final class MockWorld {
     /// Done/failed task handles, oldest first, for pruning history.
     private var finishedOrder: [Int] = []
 
-    init(scenario: Scenario, seed: UInt64, startDate: Date, tuning: MockTuning? = nil) {
+    init(scenario: Scenario, seed: UInt64, startDate: Date, tuning: MockTuning? = nil, rules: WorkflowRules = .defaults) {
         self.scenario = scenario
         self.startDate = startDate
         self.tuning = tuning ?? (scenario == .demo ? .demo : .stress)
         rng = SeededRandom(seed: seed)
+        classifier = WorkflowClassifier(rules: rules, home: MockScript.home)
         let projects = scenario == .demo ? MockScript.demoProjects : MockScript.stressProjects
         catalog = projects.flatMap { p in p.tasks.map { (p, $0) } }
         seedInitialTasks()
@@ -115,6 +118,13 @@ final class MockWorld {
 
     func date(_ t: Double) -> Date { startDate.addingTimeInterval(t) }
 
+    /// Reclassifies every task under new rules; changed ones go out in the next update.
+    func setRules(_ rules: WorkflowRules) {
+        guard rules != classifier.rules else { return }
+        classifier = WorkflowClassifier(rules: rules, home: MockScript.home)
+        for case let task? in slots { reclassify(task) }
+    }
+
     // MARK: Events
 
     private func handle(_ event: MockEvent, at t: Double) {
@@ -148,14 +158,24 @@ final class MockWorld {
     private func seedInitialTasks() {
         switch scenario {
         case .demo:
-            // Finished tasks from the past few hours, one of them failed.
+            // Finished tasks from the past few hours, one of them failed. Some are fixed so every workflow
+            // group, both folder projects and Others have a task from the start.
             let hoursAgo = [4.6, 3.5, 2.6, 1.7, 1.0, 0.4]
+            let finishedTitles = ["Daily Gmail report", "Fix flaky checkout tests", "Video quality enhancement", nil,
+                                  "Summarize the lease agreement PDF", nil]
+            // The newest active one starts in Others and moves to PubgMontages when it runs the pubg-montage skill.
+            let activeTitles = ["Fix the timeline chart jumping when a subagent finishes", nil,
+                                "Backtest the momentum strategy on 2025 data", "Cut last night's best moments"]
+            recentTitles = (finishedTitles + activeTitles).compactMap { $0 }    // random picks don't repeat them
             for (k, h) in hoursAgo.prefix(tuning.historyCount).enumerated() {
-                startTask(at: -(h + rng.uniform(-0.15...0.15)) * 3600, history: true, failed: k == 2 ? true : nil)
+                startTask(at: -(h + rng.uniform(-0.15...0.15)) * 3600, history: true, failed: k == 2 ? true : nil,
+                          title: finishedTitles[k])
             }
             // Active tasks at different stages; they keep going for a while after launch.
-            for secondsAgo in [100.0, 62, 30, 8] {
-                startTask(at: -(secondsAgo + rng.uniform(-4...4)), notBefore: rng.uniform(15...50))
+            for (k, secondsAgo) in [100.0, 62, 30, 8].enumerated() {
+                let title = activeTitles[k]
+                startTask(at: -(secondsAgo + rng.uniform(-4...4)), failed: title == nil ? nil : false,
+                          notBefore: rng.uniform(15...50), title: title)
             }
             queue.push(.spawn, at: rng.uniform(15...35))
         case .stress:
@@ -172,8 +192,8 @@ final class MockWorld {
 
     @discardableResult
     private func startTask(at t: Double, history: Bool = false, failed: Bool? = nil,
-                           notBefore: Double? = nil, sustainUntil: Double? = nil) -> MockTask {
-        let (project, template) = pickTemplate()
+                           notBefore: Double? = nil, sustainUntil: Double? = nil, title: String? = nil) -> MockTask {
+        let (project, template) = title.flatMap(template(titled:)) ?? pickTemplate()
         let id = rng.uuid()
         let mainModel = rng.pick(MockModels.main)
         let model = ModelInfo(id: mainModel, source: .transcript)
@@ -187,19 +207,20 @@ final class MockWorld {
         let snap = TaskSnapshot(
             id: id, source: "mock", projectName: project.name, projectPath: project.path, title: template.title,
             status: .running, startedAt: d, lastActivityAt: d, endedAt: nil, mainModel: model,
-            gitBranch: template.branch, runs: [main])
+            gitBranch: template.branch.isEmpty ? nil : template.branch, runs: [main])
         let task = MockTask(handle: slots.count, project: project, template: template, isHistory: history, snap: snap,
                            mainMeta: MockRunMeta(profile: nil, parent: nil, area: "", files: ("", ""), resolvedModel: mainModel),
                            areas: template.areas.shuffled(using: &rng))
         let fails = failed ?? rng.chance(tuning.taskFailChance)
         switch scenario {
         case .demo:
-            task.phases = demoScript(failed: fails)
+            task.phases = template.workflow.map { workflowScript($0, failed: fails) } ?? demoScript(failed: fails)
         case .stress:
             task.phases = stressScript(failed: fails)
             task.sustainUntil = sustainUntil ?? t + (history ? rng.uniform(0...30) : rng.uniform(120...360))
         }
         task.notBefore = notBefore
+        reclassify(task)
         slots.append(task)
         activeCount += 1
         markDirty(task)
@@ -210,7 +231,14 @@ final class MockWorld {
     private func pickTemplate() -> (MockProject, MockTaskTemplate) {
         var candidates = catalog.filter { !recentTitles.contains($0.1.title) }
         if candidates.isEmpty { candidates = catalog }
-        let pick = rng.pick(candidates)
+        return use(rng.pick(candidates))
+    }
+
+    private func template(titled title: String) -> (MockProject, MockTaskTemplate)? {
+        catalog.first { $0.1.title == title }.map(use)
+    }
+
+    private func use(_ pick: (MockProject, MockTaskTemplate)) -> (MockProject, MockTaskTemplate) {
         recentTitles.append(pick.1.title)
         if recentTitles.count > min(12, catalog.count - 4) { recentTitles.removeFirst() }
         return pick
@@ -233,6 +261,21 @@ final class MockWorld {
             p += [.wave(.review, count: rng.weighted([(1, 0.7), (2, 0.3)])), .join, .work(rng.uniform(2...5))]
         }
         if failed { p = Array(p.prefix(rng.int(3...p.count))) }
+        p.append(.end(failed: failed))
+        return p
+    }
+
+    /// Work outside a code project: skills, one to three of its own agents, maybe a skill that changes
+    /// what the task is about and more agents, then the closing tool calls.
+    private func workflowScript(_ w: MockWorkflow, failed: Bool) -> [MockPhase] {
+        var p: [MockPhase] = w.skills.map { .skill($0) }
+        p += [.work(rng.uniform(4...9)), .wave(.workflow, count: rng.int(1...3)), .join]
+        if let later = w.laterSkill {
+            p += [.work(rng.uniform(3...6)), .skill(later), .wave(.workflow, count: rng.int(1...2)), .join]
+        }
+        p.append(.work(rng.uniform(2...5)))
+        p += w.tools.map { .tool($0.name, $0.summary) }
+        if failed { p = Array(p.prefix(rng.int(min(2, p.count)...p.count))) }
         p.append(.end(failed: failed))
         return p
     }
@@ -290,6 +333,15 @@ final class MockWorld {
             let (name, summary) = waitingTool(task, reason)
             appendTool(task, 0, name: name, summary: summary, at: t)
             queue.push(.mainStep(task.handle), at: t + seconds)
+        case .skill(let name):
+            task.mode = .blocked
+            appendTool(task, 0, name: "Skill", summary: name, at: t)
+            if task.skills.insert(name).inserted { reclassify(task) }
+            queue.push(.mainStep(task.handle), at: t + rng.uniform(1...3))
+        case let .tool(name, summary):
+            task.mode = .blocked
+            appendTool(task, 0, name: name, summary: summary, at: t)
+            queue.push(.mainStep(task.handle), at: t + rng.uniform(1...3))
         case .end(let failed):
             if let notBefore = task.notBefore, t < notBefore {
                 // Seeded tasks keep working past launch so the deck starts busy.
@@ -355,7 +407,7 @@ final class MockWorld {
             task.meta[p].openChildren -= 1
             return
         }
-        let profile = rng.pick(MockScript.mix(for: stage))
+        let profile = stage == .workflow ? workflowProfile(task) : rng.pick(MockScript.mix(for: stage))
         let estimate = DurationEstimate(seconds: (profile.baseSeconds * tuning.timeScale).rounded(),
                                         confidence: EstimateConfidence(sampleCount: profile.samples),
                                         sampleCount: profile.samples)
@@ -401,11 +453,11 @@ final class MockWorld {
         }
 
         let description = rng.pick(profile.descriptions)(area)
+        let context = project.about ?? "Context: this is the \(project.name) repo (\(project.path)) on branch \(task.template.branch)."
         let prompt = """
             \(profile.job(area))
 
-            Context: this is the \(project.name) repo (\(project.path)) on branch \(task.template.branch). \
-            The user asked: "\(task.template.title)". \(task.template.details)
+            \(context) The user asked: "\(task.template.title)". \(task.template.details)
 
             Start with \(file) and \(file2). \(profile.guidance)
 
@@ -422,6 +474,7 @@ final class MockWorld {
             isBackground: background, startedAt: d, endedAt: nil, lastActivityAt: d, estimate: estimate,
             toolCallCount: 0, currentActivity: nil, tokens: nil, resultSummary: nil, recentTools: [], depth: depth))
         task.meta.append(meta)
+        if task.agentTypes.insert(profile.type).inserted { reclassify(task) }
         let i = task.snap.runs.count - 1
         if queued {
             queue.push(.begin(task.handle, i), at: t + rng.uniform(2...8))
@@ -572,7 +625,27 @@ final class MockWorld {
         case .webSearch: return ("WebSearch", rng.pick(project.queries))
         case .todo: return ("TodoWrite", "\(rng.int(3...7)) todos")
         case .docs: return ("WebFetch", rng.pick(MockScript.claudeDocs))
+        case .gmail: return rng.pick(MockScript.gmailCalls)
         }
+    }
+
+    /// The agent type for a workflow wave: the template's, or its later ones once the later skill ran.
+    private func workflowProfile(_ task: MockTask) -> MockAgentProfile {
+        let w = task.template.workflow
+        let later = w?.laterSkill.map(task.skills.contains) == true && w?.laterAgents.isEmpty == false
+        let types = (later ? w?.laterAgents : w?.agents) ?? ["general-purpose"]
+        return MockScript.profile(rng.pick(types))
+    }
+
+    /// Puts the task in its sidebar entry from what it has done so far, as the live source would.
+    private func reclassify(_ task: MockTask) {
+        let signals = TaskSignals(workingFolder: task.project.path, title: task.snap.title,
+                                  agentTypes: Array(task.agentTypes), skills: Array(task.skills), tools: Array(task.tools))
+        let entry = classifier.classify(signals)
+        guard entry.name != task.snap.projectName || entry.kind != task.snap.projectKind else { return }
+        task.snap.projectName = entry.name
+        task.snap.projectKind = entry.kind
+        markDirty(task)
     }
 
     private func waitingTool(_ task: MockTask, _ reason: MockWaitReason) -> (String, String) {
@@ -622,6 +695,7 @@ final class MockWorld {
         }
         if d > task.snap.lastActivityAt { task.snap.lastActivityAt = d }
         markDirty(task)
+        if task.tools.insert(name).inserted { reclassify(task) }
     }
 
     private func endOpenTool(_ task: MockTask, _ i: Int, at t: Double) {
@@ -647,6 +721,7 @@ final class MockWorld {
         case .build: 0.8
         case .nested: 0.5
         case .stress: 0.75
+        case .workflow: 0.3
         }
     }
 }
@@ -676,6 +751,10 @@ enum MockPhase {
     case join
     /// Blocked on the user (permission prompt, question, plan approval).
     case waitUser(Double, MockWaitReason)
+    /// The main agent runs a skill (Skill tool call).
+    case skill(String)
+    /// The main agent makes one specific tool call (name, summary).
+    case tool(String, String)
     case end(failed: Bool)
 }
 
@@ -729,6 +808,10 @@ final class MockTask {
     var notBefore: Double?
     /// Stress: replace finished subagents until this time.
     var sustainUntil: Double?
+    /// Workflow signals so far.
+    var skills: Set<String> = []
+    var tools: Set<String> = []
+    var agentTypes: Set<String> = []
     private let areas: [String]
     private var areaCursor = 0
 

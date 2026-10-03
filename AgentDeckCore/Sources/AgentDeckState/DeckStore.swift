@@ -17,8 +17,11 @@ public final class DeckStore {
     public private(set) var inactiveTaskIDs: [String] = []
     /// Ids of runs currently running, longest-running first.
     public private(set) var runningRunIDs: [String] = []
-    /// Distinct project names, sorted.
-    public private(set) var projects: [String] = []
+    /// The sidebar's project entries in order: workflow groups as configured, then folder projects
+    /// alphabetically, then Others. Groups and Others are listed even with no tasks.
+    public private(set) var projects: [String] = [WorkflowRules.othersName]
+    /// Workflow group names, in the configured order (`setWorkflowGroups`).
+    public private(set) var groupNames: [String] = []
     public private(set) var agentTypes: [String] = []
 
     public private(set) var initialLoadComplete = false
@@ -56,6 +59,19 @@ public final class DeckStore {
 
     public func setError(_ message: String?) { if loadError != message { loadError = message } }
 
+    /// Sets the configured workflow groups (names, in order); they're listed even before any task joins.
+    public func setWorkflowGroups(_ names: [String]) {
+        guard names != groupNames else { return }
+        groupNames = names
+        rebuildIndexes()
+    }
+
+    /// What a sidebar entry is, by name.
+    public func projectKind(of name: String) -> ProjectKind {
+        if name == WorkflowRules.othersName { return .others }
+        return groupNames.contains(name) ? .workflow : .folder
+    }
+
     public func reset() {
         loadError = nil
         tasks = [:]
@@ -63,7 +79,7 @@ public final class DeckStore {
         activeTaskIDs = []
         inactiveTaskIDs = []
         runningRunIDs = []
-        projects = []
+        projects = Self.sidebarProjects(groups: groupNames, folders: [])
         agentTypes = []
         runningAgentCount = 0
         glanceRunningCount = 0
@@ -100,7 +116,10 @@ public final class DeckStore {
             if let model = tasks[snap.id] {
                 let oldStatus = model.status
                 let oldRunIDs = model.runIDs
+                let oldEntry = (model.projectName, model.projectKind)
                 model.apply(snap)
+                // A task can change entry while it runs (a skill or agent that matches a workflow group).
+                if oldEntry != (model.projectName, model.projectKind) { structureChanged = true }
                 if oldStatus != snap.status {
                     structureChanged = true
                     if notify {
@@ -163,9 +182,9 @@ public final class DeckStore {
     private func rebuildIndexes() {
         var active: [TaskModel] = []
         var inactive: [TaskModel] = []
-        var projectSet = Set<String>()
+        var folders = Set<String>()
         for t in tasks.values {
-            projectSet.insert(t.projectName)
+            if t.projectKind == .folder { folders.insert(t.projectName) }
             if t.status.isActive { active.append(t) } else { inactive.append(t) }
         }
         active.sort { ($0.startedAt, $0.id) > ($1.startedAt, $1.id) }
@@ -175,7 +194,7 @@ public final class DeckStore {
         setIfChangedByIdentity(\.activeTasks, active)
         setIfChangedByIdentity(\.inactiveTasks, inactive)
         setIfChanged(\.activeCountByProject, Dictionary(active.map { ($0.projectName, 1) }, uniquingKeysWith: +))
-        setIfChanged(\.projects, projectSet.sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+        setIfChanged(\.projects, Self.sidebarProjects(groups: groupNames, folders: folders))
 
         var running: [RunModel] = []
         var types = Set<String>()
@@ -199,6 +218,14 @@ public final class DeckStore {
         setIfChanged(\.agentTypes, types.sorted())
         let last = inactive.compactMap { $0.endedAt ?? $0.lastActivityAt }.max()
         setIfChanged(\.lastFinishedAt, last)
+    }
+
+    /// Groups in order, then folders alphabetically (a folder named like a group or "Others" merges into
+    /// that entry), then Others.
+    static func sidebarProjects(groups: [String], folders: Set<String>) -> [String] {
+        let reserved = Set(groups).union([WorkflowRules.othersName])
+        let sortedFolders = folders.subtracting(reserved).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        return groups + sortedFolders + [WorkflowRules.othersName]
     }
 
     private func scheduleGlanceUpdate() {

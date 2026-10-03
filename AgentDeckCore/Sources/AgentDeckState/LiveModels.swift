@@ -113,7 +113,10 @@ public final class RunModel: Identifiable {
 public final class TaskModel: Identifiable {
     public let id: String
     public private(set) var source: String
+    /// The sidebar entry: a workflow group, the project folder's name, or "Others".
     public private(set) var projectName: String
+    public private(set) var projectKind: ProjectKind
+    /// The real working folder, whatever the entry.
     public private(set) var projectPath: String
     public private(set) var title: String
     public private(set) var status: TaskStatus
@@ -136,6 +139,7 @@ public final class TaskModel: Identifiable {
         id = s.id
         source = s.source
         projectName = s.projectName
+        projectKind = s.projectKind ?? .folder
         projectPath = s.projectPath
         title = s.title
         status = s.status
@@ -153,6 +157,7 @@ public final class TaskModel: Identifiable {
     public func apply(_ s: TaskSnapshot) {
         assign(\.source, s.source)
         assign(\.projectName, s.projectName)
+        assign(\.projectKind, s.projectKind ?? .folder)
         assign(\.projectPath, s.projectPath)
         assign(\.title, s.title)
         assign(\.status, s.status)

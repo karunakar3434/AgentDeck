@@ -17,6 +17,10 @@ public final class ClaudeCodeSource: AgentSource {
         public var quietInterval: TimeInterval = 120
         /// Tier-1 load scope and the fallback sweep's file scope.
         public var recentWindow: TimeInterval = 600
+        /// Workflow groups that decide each task's sidebar entry (`setWorkflowRules` changes them live).
+        public var workflowRules: WorkflowRules = .defaults
+        /// Expands "~" in folder rules; never a real project folder itself.
+        public var homeDirectory: String = NSHomeDirectory()
 
         public init(dataRoot: URL, historyWindow: TimeInterval) {
             self.dataRoot = dataRoot
@@ -52,6 +56,10 @@ public final class ClaudeCodeSource: AgentSource {
 
     public func stop() async {
         await engine.stop()
+    }
+
+    public func setWorkflowRules(_ rules: WorkflowRules) async {
+        await engine.setWorkflowRules(rules)
     }
 }
 

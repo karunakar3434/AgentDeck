@@ -238,7 +238,9 @@ public struct TaskSnapshot: Sendable, Hashable, Codable, Identifiable {
     public var id: String
     /// Which adapter produced it ("claude-code", "mock").
     public var source: String
+    /// The sidebar entry: a workflow group, the project folder's name, or "Others" (`WorkflowClassifier`).
     public var projectName: String
+    /// The session's real working folder, whatever its entry.
     public var projectPath: String
     /// First user prompt, trimmed (or the session's custom title).
     public var title: String
@@ -251,13 +253,16 @@ public struct TaskSnapshot: Sendable, Hashable, Codable, Identifiable {
     public var gitBranch: String?
     /// All runs, main agent first, then subagents in start order.
     public var runs: [AgentRunSnapshot]
+    /// What `projectName` is; nil (snapshots from before workflow groups) reads as a folder.
+    public var projectKind: ProjectKind?
 
     public init(id: String, source: String, projectName: String, projectPath: String, title: String,
                 status: TaskStatus, startedAt: Date, lastActivityAt: Date, endedAt: Date?,
-                mainModel: ModelInfo, gitBranch: String?, runs: [AgentRunSnapshot]) {
+                mainModel: ModelInfo, gitBranch: String?, runs: [AgentRunSnapshot], projectKind: ProjectKind? = nil) {
         self.id = id
         self.source = source
         self.projectName = projectName
+        self.projectKind = projectKind
         self.projectPath = projectPath
         self.title = title
         self.status = status

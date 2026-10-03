@@ -62,6 +62,8 @@ enum SessionReducer {
         envelope(e.context, owner: owner, &s)
         var calls: [ToolUse] = []
         var plainTools: [String] = []
+        var toolNames: [String] = []
+        var skills: [String] = []
         let (ownerID, ownerDepth) = withOwner(owner, &s, now: now) { r -> (String, Int) in
             ownLine(&r, ts, owner: owner)
             if let model = e.model { r.own.transcriptModel = model }
@@ -99,6 +101,8 @@ enum SessionReducer {
                     if let report = t.handbackMessage { r.own.handbackReport = report }
                     if t.agentCall != nil { calls.append(t) }
                     if !agentTools.contains(t.name) { plainTools.append(t.id) }
+                    toolNames.append(t.name)
+                    if let skill = t.skill { skills.append(skill) }
                 case .text:
                     // Subagent fallback finish: a final text block with end_turn (older versions set it).
                     if owner != .main, e.stopReason == "end_turn", let ts {
@@ -113,6 +117,8 @@ enum SessionReducer {
             }
             return (r.id, r.depth)
         }
+        for name in toolNames { SessionState.note(name, in: &s.toolNames) }
+        for skill in skills { SessionState.note(skill, in: &s.skills) }
         for id in plainTools where s.plainToolUseIDs.insert(id).inserted {
             dropPendingNotices(toolUseID: id, in: &s)     // a Bash/Monitor notice that arrived before its call
         }
@@ -184,6 +190,7 @@ enum SessionReducer {
         }
         for n in e.notices { applyNotice(n, at: ts, to: &s) }
         if let peer = e.peerReport { s.peerReports[peer.agentID] = peer.text }
+        if let command = e.command { SessionState.note(command, in: &s.skills) }
     }
 
     // MARK: Agent results and notifications

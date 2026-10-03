@@ -33,8 +33,8 @@ largest file 10.2 MB. 18 files changed in the last 24 h. Retention is `cleanupPe
 The directory name is the session's starting cwd with every non-alphanumeric character
 replaced by `-` (`/Users/karun/Projects/AgentDeck` → `-Users-karun-Projects-AgentDeck`,
 spaces too). The encoding is lossy, so **the real path is read from the `cwd` field** of
-the first line that has one, never decoded from the directory name. Project name =
-last path component of that `cwd`.
+the first line that has one, never decoded from the directory name. That `cwd` is the
+task's working folder; which sidebar entry the task lands in is §9.
 
 Two complications seen on disk:
 - **Sessions can move.** After a `change_directory` the desktop app moves the `.jsonl` to
@@ -371,3 +371,97 @@ as a hint to re-read the named transcript right away. The README has the snippet
 - Files that shrink or are replaced (inode change). Re-read from 0 for that session.
 - Clock skew between line timestamps. Use max(), never assume order.
 - `sessionId` on subagent lines is the parent's, so it doesn't identify the subagent.
+
+## 9. Sidebar entries: workflow groups, folders, Others
+
+Each task goes in exactly one sidebar entry (`TaskSnapshot.projectName`, with `projectKind`),
+decided by `WorkflowClassifier` in this order: the first workflow group with a matching rule,
+else the real project folder (named after the folder), else Others. The rules themselves are
+in the README (Projects and workflow groups); this section is what they read and why the
+defaults look the way they do.
+
+### Signals
+
+| Signal | Where it comes from | Kept |
+|---|---|---|
+| Working folder | First `cwd` of the main transcript, or the latest `relocatedCwd` (§1). Later `cwd`s from a Bash `cd` are ignored | — |
+| Title | The task title (§2 Titles) | ≤ 120 chars |
+| Agent types | `subagent_type` of every Agent call (meta `agentType` for runs without a call) | ≤ 128 names |
+| Skills | The Skill tool's `input.skill`, and `<command-name>/name</command-name>` in a `user` line | ≤ 128 names, ≤ 300 chars each |
+| Tools | `name` of every `tool_use` in any of the task's files; MCP tools by full name | ≤ 128 names, ≤ 300 chars each |
+
+```json
+{"type":"tool_use","name":"Skill","input":{"skill":"anthropic-skills:skill-creator","args":"…"}}
+{"type":"user","message":{"content":"<command-message>localbiz-pipeline</command-message>\n<command-name>/localbiz-pipeline</command-name>\n<command-args>…</command-args>"},"origin":{"kind":"human"}, …}
+{"type":"tool_use","name":"mcp__07c0f660-e970-4f41-bb4f-8b485e3c62ab__createScheduledPost","input":{…}}
+```
+
+Both skill sources are needed. A skill the model calls is a Skill `tool_use`. A skill you type
+as a slash command never makes one — it shows up only as the command echo above, followed by
+an `isMeta` user line starting "Base directory for this skill: …". A Skill call the skill
+refuses (`disable-model-invocation`) still counts: the session asked for that skill.
+
+Nothing new is JSON-decoded for these. The Skill input's `skill` was already decoded for the
+inspector's tool summary, and a command echo was already recognized (and dropped as a prompt)
+by its `<command-` prefix; the name is cut out of the first 2 KB of that text.
+
+### No real project folder
+
+A working folder isn't a project folder when it contains `/scratch-workspaces/` (desktop
+sessions started without a folder:
+`~/Library/Application Support/Claude/scratch-workspaces/<org>/<account>/scratch-YYYY-MM-DD-xxxxxx`),
+is inside `/tmp`, `/private/tmp`, `/var/folders` or `/private/var/folders` (for example a Claude
+Code scratchpad, `/private/tmp/claude-501/<encoded-cwd>/<sessionId>/scratchpad/…`), or is the
+home folder itself, `/`, or unknown. Paths compare ignoring case, like the default macOS volume.
+
+The September sessions that start in the home folder and later `cd ~/voice-assistant` land in
+Others: their working folder is the first `cwd`. Following `cd` instead would let any session
+that glances into another folder change entry.
+
+### Scheduled runs aren't marked
+
+Checked on every main transcript here: `entrypoint` is `cli` or `claude-desktop`;
+`promptSource` is `typed`, `queued`, `sdk` or `system`; `turnOrigin` is `human`, `peer`,
+`task_notification` or `sdk`. The scheduled "Daily Gmail report" run starts with
+`promptSource:"sdk"`, `turnOrigin:"human"`, `origin.kind:"human"` — the same as a desktop
+session someone typed into — and its first prompt is the desktop's scratch-workspace reminder.
+Its `agent-name` line isn't a marker either: every desktop session has one, equal to its custom
+title. No field tells a scheduled run apart, so GmailMonitor matches on the `gmail-monitor` agent type and the morning
+skill instead, and a scheduled task that uses neither lands in Others.
+
+### The defaults against real sessions
+
+| Session | Working folder | Signals | Entry |
+|---|---|---|---|
+| Daily Gmail report | scratch workspace | agent `gmail-monitor` | GmailMonitor |
+| Gmail monitor subagent | scratch workspace | agents `gmail-monitor` (failed: the type didn't exist yet), `general-purpose`; `mcp__scheduled-tasks__*` tools | GmailMonitor |
+| Video quality enhancement | scratch workspace | skill `anthropic-skills:skill-creator`, `/agents`; Bash commands running `~/Projects/Pubg_Tools/bin/ffmpeg` | PubgMontages, by the title keyword `video` |
+| second-session | `/private/tmp/claude-501/…/scratchpad/second-session` | agents `Explore` ×2 | Others |
+| Task execution dashboard UI | scratch workspace | none | Others |
+| AgentDeck sessions | `~/Projects/AgentDeck` | code agents, `my-writing-style` skill | AgentDeck |
+| localbiz sessions | `~/localbiz` (one moved there from a scratch workspace with `relocated`) | `localbiz-*` agents, `/localbiz-pipeline` | localbiz |
+
+"Video quality enhancement" is the weak case. None of the strict PubgMontages signals appear in
+it: no `pubg-montage` or `video-enhance` Skill call (it ran skill-creator to *create*
+`video-enhance`), no `video-editor` run (it wrote that agent's definition but never launched it),
+no Metricool call, and its `cwd` never left the scratch workspace — it only moved to
+`video-enhance/scripts` inside it. The `Pubg_Tools` path is in Bash command text, which isn't a
+signal. Its title is all that ties it to the PUBG work, which is why `video` is a default title
+keyword. Later sessions that run `video-enhance` or a `video-editor` agent match on those.
+
+The Metricool tools (`createScheduledPost`, `createScheduledPostForReview`) appear in this Mac's
+tool listings but haven't been called in any transcript yet; the rule matches the tool's own name
+because the server part of an MCP tool name is an id that differs per install.
+
+### Stored with history
+
+History rows keep the signals as JSON in `history_task.signals` (migration v2), so a rule change
+reclassifies every task, history included, without reading a transcript. `history_task.project_name`
+(and `projectName` in the snapshot blob) records the entry when the row was written and is never
+read back for display. Builds before workflow groups stored the raw folder name there — `Scratch`,
+or `scratch-2026-10-02-cfe996` from a build before scratch folders were folded together — and
+showed it as-is, so the same scratch folder appeared under two names. v2 fills `signals` for
+those rows from what each row kept: the working folder, the title, the agent types, and the Skill
+and tool names among each agent's last 20 tool calls. Their slash commands are lost — they were
+never tool calls. A row an older build writes after v2 has `signals` NULL and gets the same
+recovery when it's read.

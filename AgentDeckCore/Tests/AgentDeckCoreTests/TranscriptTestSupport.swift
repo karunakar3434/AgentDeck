@@ -18,6 +18,11 @@ enum Fixtures {
     /// "Now" for fixture tests: 2026-10-03T00:00:00Z, about two hours after the newest fixture line.
     static let now = Date(timeIntervalSince1970: 1_790_985_600)
 
+    /// The home folder in fixture paths (`make-fixtures.py` rewrites the real one to this).
+    static let home = "/Users/dev"
+    /// The default workflow groups, with fixture paths.
+    static let classifier = WorkflowClassifier(rules: .defaults, home: home)
+
     /// The main transcript of a fixture session.
     static func mainPath(_ sid: String, in root: URL = Fixtures.root) -> String {
         let projects = root.appendingPathComponent("projects")
@@ -85,14 +90,16 @@ enum Fixtures {
 
     /// Builds a snapshot from a reduced state with fixture definitions and the default estimator.
     static func snapshot(_ s: SessionState, process: ProcessState? = nil, now: Date = Fixtures.now,
-                         historyWindow: TimeInterval = 90 * 86_400) -> TaskSnapshot {
+                         historyWindow: TimeInterval = 90 * 86_400,
+                         classifier: WorkflowClassifier = Fixtures.classifier) -> TaskSnapshot {
         var defs = AgentDefinitions(dataRoot: root.path)
         let estimator = Estimator()
         let status = StatusRules.derive(s, process: process, now: now, quietInterval: 120, historyWindow: historyWindow)
         return SnapshotBuilder.build(s, status: status,
                                      definitionModel: { defs.model(for: $0, projectPath: s.projectPath, now: now) },
                                      estimate: { estimator.estimate(agentType: $0, family: $1) },
-                                     finishedEstimate: { _, type, family in estimator.estimate(agentType: type, family: family) }).snapshot
+                                     finishedEstimate: { _, type, family in estimator.estimate(agentType: type, family: family) },
+                                     classifier: classifier).snapshot
     }
 
     /// A writable copy of the fixtures in a temporary directory, every file's mtime set to `mtime`.
@@ -162,14 +169,17 @@ struct EngineHarness {
     let configuration: ClaudeCodeSource.Configuration
 
     init(root: URL? = nil, alive: Set<Int32> = [3156], now: Date = Fixtures.now,
-         historyWindow: TimeInterval = 30 * 86_400) throws {
+         historyWindow: TimeInterval = 30 * 86_400, history: HistoryStore = .inMemory(),
+         rules: WorkflowRules = .defaults) throws {
         let root = try root ?? Fixtures.temporaryCopy()
         self.root = root
         clock = TestClock(now: now)
         probe = FakeProbe(alive: alive)
-        history = HistoryStore.inMemory()
+        self.history = history
         var config = ClaudeCodeSource.Configuration(dataRoot: root, historyWindow: historyWindow)
         config.databaseURL = root.appendingPathComponent("unused.sqlite")
+        config.workflowRules = rules
+        config.homeDirectory = Fixtures.home
         configuration = config
         engine = TranscriptEngine(configuration: config,
                                   environment: CoreEnvironment(clock: clock, probe: probe, history: history,

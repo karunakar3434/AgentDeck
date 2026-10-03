@@ -15,7 +15,7 @@ AgentDeck only reads, and only from Claude Code's data folder (default `~/.claud
 | `agents/*.md`, and `.claude/agents/*.md` inside each session's project folder | An agent definition's `model:` (a fallback for which model a subagent runs) |
 | `agentdeck/events.jsonl` | Only if you install the [optional hook](#optional-hooks-for-lower-latency) |
 
-It never writes anything under `~/.claude`, never opens `sessions/*.key` (those hold secrets), and makes no network connections. The only thing it writes is its history database, `~/Library/Application Support/AgentDeck/agentdeck.sqlite` (plus SQLite's `-wal`/`-shm` files). That database keeps copies of what the UI shows for finished tasks — titles, agent prompts, tool-call summaries, result summaries — and the durations used for estimates, so treat it with the same care as the transcripts.
+It never writes anything under `~/.claude`, never opens `sessions/*.key` (those hold secrets), and makes no network connections. The only thing it writes is its history database, `~/Library/Application Support/AgentDeck/agentdeck.sqlite` (plus SQLite's `-wal`/`-shm` files). That database keeps copies of what the UI shows for finished tasks — titles, agent prompts, tool-call summaries, result summaries — the durations used for estimates, and the names each task's sidebar entry is decided from (working folder, skills, tools, agent types), so treat it with the same care as the transcripts.
 
 Every on-disk format, and how each field in the UI is derived from it, is in [docs/data-sources.md](docs/data-sources.md).
 
@@ -60,6 +60,8 @@ Use the Release build (`make install`) day to day. Debug builds accept [debug re
 ### Simulated agents
 
 `-mock` swaps the Claude Code source for a simulator: a handful of realistic sessions with compressed durations (a task takes 1–4 minutes), new tasks arriving, failures, cancellations, nested subagents and overruns. It reads nothing from disk and never opens the history database. The window subtitle reads "Simulated agents" while it's on.
+
+The demo starts with a task in every sidebar entry: a Gmail report and a morning brief (GmailMonitor), PUBG video work (PubgMontages), a `Multi-agent-trading-bot` repo (TradingBot), two code projects (AgentDeck, web-dashboard) and one-off scratch jobs (Others). The newest active task, "Cut last night's best moments", starts in Others and moves to PubgMontages about 20 s after launch, when it runs the `pubg-montage` skill. The simulator classifies with the same rules as the live source, so editing groups in Settings reclassifies simulated tasks too.
 
 `-stress` keeps 20 tasks with about 15 agents each running. It only takes effect together with `-mock` — on its own it's ignored and you get the live source. `make stress` launches the Debug build that way:
 
@@ -122,15 +124,52 @@ The LaunchAgent opens AgentDeck by bundle id, not by path, so it launches whiche
 
 ### Views
 
-The sidebar has **Active**, **History**, and one entry per **project** (named after the folder the session started in), each badged with its number of active tasks.
+The sidebar has **Active**, **History**, and **Projects**: the workflow groups in their configured order, then one entry per project folder (named after the folder), then **Others** — each badged with its number of active tasks. [Projects and workflow groups](#projects-and-workflow-groups) explains which entry a task lands in.
 
 - **Active** — a header strip with live counts (active tasks, running agents, models in use, the longest-running agent) above one card per task that's running or waiting on you. A card shows the title, elapsed time, project, git branch, main model, an avatar per agent (as many as fit, up to 12, then "+N"), and the task's ETA — or "Waiting on you" when Claude needs an answer or a permission. Clicking the longest-running tile jumps to that agent.
-- **Task detail** — click a card or press Return. A header with status, title, project, branch, model and ETA, then the **agent tree** (main agent, subagents, nested subagents indented under their parent, a moon on background agents, the current tool call, elapsed time, a progress ring against the estimate) and a **timeline** drawn with Swift Charts: one bar per agent, a faint extension to its expected end, and a dashed "now" line. Click a row or a bar to inspect that agent.
+- **Task detail** — click a card or press Return. A header with status, title, project entry, the real working folder (a workflow group's task still shows its scratch folder, say), branch, model and ETA, then the **agent tree** (main agent, subagents, nested subagents indented under their parent, a moon on background agents, the current tool call, elapsed time, a progress ring against the estimate) and a **timeline** drawn with Swift Charts: one bar per agent, a faint extension to its expected end, and a dashed "now" line. Click a row or a bar to inspect that agent.
 - **Inspector** — the selected agent's status, model, start and end times, estimate with its confidence and sample count, tool-call count, tokens, full prompt, result summary and recent tool calls.
 - **History** — tasks that are idle, done or failed, grouped Today / Yesterday / Earlier. Each row shows the total time, number of agents, how many ran over their estimate, and up to six actual-vs-estimated bars ("1m 10s / ~1m" — the dashed outline is the estimate, orange means over).
-- **A project** — that project's active cards above its history.
+- **A project entry** — its active cards above its history.
 
 A session whose turn has ended but which is still open is **idle**, not active — it moves to History and comes back to Active when you send the next prompt.
+
+### Projects and workflow groups
+
+Each task goes in exactly one sidebar entry, decided in this order:
+
+1. The first **workflow group** with a matching rule.
+2. Otherwise its **project folder** — one entry per folder, named after it, including folders you start using later.
+3. Otherwise **Others**.
+
+A session has no project folder when its working folder (its first `cwd`, or where the desktop app moved it) is a Claude desktop scratch workspace (`…/scratch-workspaces/…`, what the desktop app makes for a session started without a folder), a temporary folder (`/tmp`, `/private/tmp`, `/var/folders`, `/private/var/folders`), or your home folder itself. Everything else is a project folder. A later `cd` doesn't count — otherwise an AgentDeck session that peeks into another repo would jump entries.
+
+Workflow groups and Others are listed even with no tasks. A folder that shares a group's name, or is called Others, merges into that entry.
+
+A group matches when any one of its rules does:
+
+| Rule | Matches when | Example |
+|---|---|---|
+| Agent types | Any agent of the task has that `subagent_type` (any case) | `gmail-monitor` |
+| Skills | The task ran that skill — a Skill tool call, or a typed slash command. A name without a namespace matches it in any namespace, so `morning` and `anthropic-skills:morning` match each other | `anthropic-skills:morning` |
+| Tools | Any agent called that tool. An MCP tool also matches by its own name on any server | `createScheduledPost` matches `mcp__07c0f660-…__createScheduledPost` |
+| Folders | With a leading `/` or `~`: the working folder is that folder or inside it. Otherwise a folder name (`*` and `?` wildcards; `-`, `_` and spaces read the same) that the working folder or any of its parents has | `~/Projects/Pubg_Tools`, `multi-agent-trading-bot*` |
+| Title keywords | The title has the word, at the start of a word, any case — **only** for sessions with no project folder, so an AgentDeck session about Gmail stays under AgentDeck | `PUBG`, `morning brief` |
+
+The defaults:
+
+| Group | Rules |
+|---|---|
+| GmailMonitor | Agent type `gmail-monitor`; skill `anthropic-skills:morning`; title keywords `Gmail`, `morning brief` |
+| PubgMontages | Agent type `video-editor`; skills `pubg-montage`, `pubg-instagram-post`, `video-enhance`; tools `createScheduledPost`, `createScheduledPostForReview` (Metricool); folder `~/Projects/Pubg_Tools`; title keywords `PUBG`, `montage`, `video`, `Instagram`, `reel` |
+| TradingBot | Folder `multi-agent-trading-bot*` — the repo or anything inside it, wherever it's cloned, including GitHub's `-main` download suffix; title keyword `trading bot` |
+
+Two of these are weaker than they look, and [docs/data-sources.md §9](docs/data-sources.md#9-sidebar-entries-workflow-groups-folders-others) has the evidence for all of them:
+
+- **No scheduled-run marker.** The scheduled Gmail run has the same `entrypoint`, `promptSource` and `turnOrigin` as a session you typed into, so GmailMonitor goes by the `gmail-monitor` agent and the morning skill. A scheduled task that runs neither lands in Others.
+- **`video` is a title keyword** because "Video quality enhancement" has none of the strict PubgMontages signals — it created the `video-enhance` skill and the `video-editor` agent but never ran either. Only scratch sessions are affected; a project session titled "video…" stays under its folder.
+
+An entry can change while a task runs: a scratch session that calls `pubg-montage` halfway through moves from Others to PubgMontages at that moment. When the task finishes, its entry and the signals it was decided from are saved with its history row. Changing the rules reclassifies every task, history included, from those saved signals — nothing is re-read from `~/.claude`.
 
 ### Keyboard shortcuts
 
@@ -146,13 +185,13 @@ A session whose turn has ended but which is still open is **idle**, not active �
 | Esc | Close the inspector; press again to close the task |
 | ⌥⌘M | Debug › Simulate Agents |
 
-In the palette, ↑/↓ move the selection, Return opens it and Esc closes the palette. With nothing typed it lists Go to Active / Go to History, every task, and every running agent; typing fuzzy-matches task titles, project names, agent types and agent descriptions, with active tasks and running agents ranked higher.
+In the palette, ↑/↓ move the selection, Return opens it and Esc closes the palette. With nothing typed it lists Go to Active / Go to History, every task, and every running agent; typing fuzzy-matches task titles, project entries (workflow group, folder or Others), agent types and agent descriptions, with active tasks and running agents ranked higher.
 
 The arrow keys, Return and Esc are handled by the task list and task view, so they don't do this while the search field or palette has focus.
 
 ### Search and filters
 
-The toolbar search (⌘F) matches task titles, project names, agent types and agent descriptions. The **Filter** menu narrows by project, status, model family (Fable, Opus, Sonnet, Haiku, Other) and agent type. Choices in one category widen the match, choices across categories narrow it; a task matches a model or agent-type filter if any of its agents does. The filter icon fills and shows a count while filters are on, and **Clear Filters** resets them. Search and filters apply to Active, History and project views.
+The toolbar search (⌘F) matches task titles, project entries, agent types and agent descriptions. The **Filter** menu narrows by project entry (in sidebar order), status, model family (Fable, Opus, Sonnet, Haiku, Other) and agent type. Choices in one category widen the match, choices across categories narrow it; a task matches a model or agent-type filter if any of its agents does. The filter icon fills and shows a count while filters are on, and **Clear Filters** resets them. Search and filters apply to Active, History and project views.
 
 ### Menu bar
 
@@ -181,12 +220,15 @@ The window goes down to 420 × 420 pt, so it fits beside an editor. Below 640 pt
 | General | Show menu bar item | On | |
 | General | Show running-agent count in the menu bar | On | Disabled while the item is hidden |
 | General | Show running-agent count on the Dock icon | On | |
+| Groups | Workflow groups and their rules | GmailMonitor, PubgMontages, TradingBot | See [Projects and workflow groups](#projects-and-workflow-groups) |
 | Notifications | When a task finishes | Off | |
 | Notifications | When a subagent fails | Off | |
 | Data | Keep finished tasks for | 24 hours | 6 hours, 24 hours, 3 days, 7 days or 30 days |
 | Data | Claude Code folder | `~/.claude` | **Choose…** to change, **Reset** to go back |
 
 Changing either Data setting restarts the data source: the window empties, any open task closes, and everything reloads.
+
+**Settings › Groups** lists the workflow groups in matching order, with Others pinned last. Expand a group to rename it, edit its rules, move it up or down, or delete it; **Add Group** adds one at the end. Each rule field takes comma-separated values. Edits reach the sidebar about 0.3 s after you stop typing — applying every keystroke would reshuffle tasks between entries while a rule is half typed. A group with no name, a duplicate name, the name Others, or no rules gets a warning and is skipped when matching. Folder projects and Others aren't configurable. The groups are saved in UserDefaults under `workflowRules` (JSON) with the other settings; while they equal the defaults the key is absent, so a later build's improved defaults still reach you. **Restore Default Groups…** puts the defaults back.
 
 **Keep finished tasks for** controls what's shown, not what's deleted. The database keeps finished tasks for at least 7 days (longer if this setting is longer) and duration samples for 180 days, so shrinking the window to 6 hours and setting it back to 3 days brings the hidden tasks back.
 
@@ -505,8 +547,9 @@ build/debugctl snapshot /tmp/agentdeck.png
 | `resize <w> <h>`, `appearance dark\|light` | Window size; appearance (anything else follows the system) |
 | `mock`, `mock stress`, `mock off` | Switch the data source |
 | `meter start`, `meter stop [path]` | Frame meter (default `/tmp/agentdeck-meter.txt`) |
-| `state [path]`, `dump [path]` | Counts and navigation state; every task and agent with model, estimate and activity (defaults under `/tmp`) |
-| `settings`, `quit` | Open Settings, quit |
+| `state [path]`, `dump [path]` | Counts and navigation state; every task (with its entry, entry kind and working folder) and agent with model, estimate and activity (defaults under `/tmp`) |
+| `sidebar [path]` | The sidebar's project entries in order, each with its kind, active count and task count (default `/tmp/agentdeck-sidebar.txt`) |
+| `settings [general\|groups\|notifications\|data]`, `quit` | Open Settings (on that tab), quit |
 
 A few more (`menulabel`, `menubar`, `statusitem`, `windows`, `views`, `snapview`, `loginstatus`) inspect the menu bar item, windows and view tree — see `AgentDeck/Debug/DebugAutomation.swift`.
 
@@ -525,6 +568,7 @@ AgentDeckCore/               Swift package with everything that isn't a view
   Sources/AgentDeckState/    DeckStore and the @Observable task and agent models (main actor)
   Sources/AgentDeckCore/
     ClaudeCode/              Engine, FSEvents, incremental reads, parsing, state, hook tail
+    Workflow/                Workflow groups: rules, signals, the pure classifier
     Estimation/              Estimator, first-launch EstimateScanner
     Persistence/             GRDB history store and schema
     Mock/                    Simulator behind -mock / -stress
@@ -546,10 +590,10 @@ Makefile
 make test
 ```
 
-That runs `swift test` in `AgentDeckCore/`: 228 tests, all written with Swift Testing, in two targets.
+That runs `swift test` in `AgentDeckCore/`: 248 tests, all written with Swift Testing, in two targets.
 
-- **`AgentDeckCoreTests`** (216 tests in 17 suites) covers the line scanner and parser, the session reducer, status rules, model names, the estimator, the history store, the update coalescer, FSEvents, the engine (incremental reads, truncation and replacement resets, moved sessions, pid and window timing, hook lines, estimate bookkeeping) and the mock.
-- **`AgentDeckStateTests`** (12 tests, `DeckStoreTests.swift`) covers `DeckStore` and the live models: indexes, model identity across updates, the same run id in two sessions staying two models, dropped runs and tasks, models in use, reset, the throttled glance count, finish and subagent-failure notifications, idle elapsed time and task ETA.
+- **`AgentDeckCoreTests`** (234 tests in 19 suites) covers the line scanner and parser, the session reducer, status rules, model names, the estimator, the history store, the update coalescer, FSEvents, the engine (incremental reads, truncation and replacement resets, moved sessions, pid and window timing, hook lines, estimate bookkeeping), the mock, and workflow groups: `WorkflowClassifierTests` (the order, folder sessions staying put, title keywords, the TradingBot folder rule, temporary and home folders, skill and tool matching, the signals the reducer collects) and `WorkflowHistoryTests` (a scratch session moving to PubgMontages partway, a rule edit reclassifying history without transcripts, migrating stale `scratch-…` rows).
+- **`AgentDeckStateTests`** (14 tests, `DeckStoreTests.swift`) covers `DeckStore` and the live models: indexes, the sidebar order (groups, folders, Others), model identity across updates, the same run id in two sessions staying two models, dropped runs and tasks, models in use, reset, the throttled glance count, finish and subagent-failure notifications, idle elapsed time and task ETA.
 
 The app target has no tests of its own — the logic worth testing lives in the package.
 
@@ -592,6 +636,18 @@ It copies those sessions from `~/.claude/projects` into `Fixtures/projects/`, ke
   It opens the app by bundle id, so make sure the copy you want is in `/Applications` (`make install`). If an older build wrote it with a path instead, turn the toggle off and on again to rewrite it.
 - See which copy `open -b` resolves to by quitting AgentDeck and running `open -b com.karun.AgentDeck` yourself.
 - If the system accepted the `SMAppService` registration instead, it's listed under System Settings › General › Login Items & Extensions.
+
+### A task is in the wrong sidebar entry
+
+- Groups are tried in order and the first match wins — a session that runs both the morning skill and `pubg-montage` lands in whichever group is higher in Settings › Groups.
+- Title keywords never apply to a session with a project folder. If a project session should be in a group, add an agent type, skill, tool or folder rule instead.
+- See what AgentDeck read: `build/debugctl dump` lists each task's entry, entry kind and working folder (Debug builds). For finished tasks the signals are in the database:
+
+  ```sh
+  sqlite3 -readonly ~/Library/Application\ Support/AgentDeck/agentdeck.sqlite "SELECT id, signals FROM history_task ORDER BY ended_at DESC"
+  ```
+
+- `history_task.project_name` isn't what the sidebar shows — it's the entry when the row was written, and rows from builds before workflow groups still hold the raw folder name there (`Scratch`, `scratch-2026-10-02-cfe996`). The entry is always worked out again from `signals`.
 
 ### Resetting the history database
 

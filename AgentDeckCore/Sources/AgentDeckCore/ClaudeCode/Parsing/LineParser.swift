@@ -54,6 +54,8 @@ struct ToolUse: Sendable {
     var agentCall: AgentCall?
     /// `SubagentHandback` `input.message` (collapsed, ≤ 400 chars).
     var handbackMessage: String?
+    /// The Skill tool's `input.skill` (≤ 300 chars).
+    var skill: String?
 }
 
 struct AgentCall: Sendable {
@@ -89,6 +91,9 @@ struct UserEvent: Sendable {
     var toolEndsTurn = false
     /// A peer handback: the sending agent id and its report.
     var peerReport: (agentID: String, text: String)?
+    /// A slash command's name without the "/" (`<command-name>/morning</command-name>`): how a skill run
+    /// with a typed command shows up, since that never makes a Skill tool call.
+    var command: String?
 }
 
 struct ToolResult: Sendable {
@@ -250,8 +255,9 @@ struct LineParser {
                                      model: input.model, runInBackground: input.runInBackground)
                 }
                 let handback = name == "SubagentHandback" ? input.message.flatMap(TextUtil.report) : nil
+                let skill = name == "Skill" ? input.skill.map { TextUtil.clamp($0, limit: TextUtil.fieldLimit) } : nil
                 blocks.append(.toolUse(ToolUse(id: id, name: name, summary: ToolSummary.make(name: name, input: input),
-                                               agentCall: call, handbackMessage: handback)))
+                                               agentCall: call, handbackMessage: handback, skill: skill)))
             default:
                 blocks.append(.other)
             }
@@ -320,6 +326,7 @@ struct LineParser {
         } else if line.isMeta || line.isCompactSummary || (line.originKind != nil && line.originKind != "human")
                     || isCommandText(text) {
             event.kind = .meta
+            if text.hasPrefix("<command-") { event.command = commandName(text) }
         } else {
             event.kind = .prompt(TextUtil.cap(text, bytes: promptLimit))
         }
@@ -335,6 +342,16 @@ struct LineParser {
         let end = text.range(of: "</agent-message>", options: .backwards, range: start..<text.endIndex)?.lowerBound
             ?? text.endIndex
         return String(text[start..<end])
+    }
+
+    /// The command in `<command-name>/name</command-name>`, without the "/" (≤ 300 chars); nil when absent.
+    static func commandName(_ text: String) -> String? {
+        let head = text.prefix(2048)
+        guard let open = head.range(of: "<command-name>"),
+              let close = head.range(of: "</command-name>", range: open.upperBound..<head.endIndex) else { return nil }
+        var name = head[open.upperBound..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.hasPrefix("/") { name.removeFirst() }
+        return name.isEmpty ? nil : TextUtil.clamp(name, limit: TextUtil.fieldLimit)
     }
 
     /// Slash-command echoes and local command output are recorded as user lines but aren't prompts.

@@ -98,7 +98,7 @@ import Testing
         #expect(Set(tables) == HistorySchema.tableNames)
         #expect(Set(indexes) == ["run_duration_estimator", "history_task_ended"])
         #expect(foreignKeys == 1)
-        #expect(migrations == ["v1"])
+        #expect(migrations == ["v1", "v2"])
 
         if kind == .file {
             let mode = try await store.database.read { db in try String.fetchOne(db, sql: "PRAGMA journal_mode") }

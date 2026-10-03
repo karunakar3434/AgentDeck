@@ -18,6 +18,14 @@ final class AppModel {
     var openMainWindow: (() -> Void)?
     /// Opens the Settings window; set by a view that has `openSettings`.
     var openSettingsWindow: (() -> Void)?
+    var settingsTab: SettingsTab = .general
+
+    /// Workflow groups (Settings › Groups), saved in UserDefaults. Edits reach the sidebar and the source
+    /// after a short pause, so typing a rule doesn't reclassify every task on each keystroke.
+    private(set) var workflowRules = WorkflowRulesStorage.load()
+    /// The rules the store and source last received.
+    @ObservationIgnored private var appliedRules: WorkflowRules?
+    @ObservationIgnored private var rulesTask: Task<Void, Never>?
 
     private var started = false
     private var source: (any AgentSource)?
@@ -70,15 +78,21 @@ final class AppModel {
         nav.highlightedTaskID = nil
 
         let d = UserDefaults.standard
+        let rules = workflowRules
+        rulesTask?.cancel()
+        appliedRules = rules
+        store.setWorkflowGroups(rules.groupNames)
         let new: any AgentSource
         if isMock {
-            new = MockAgentSource(scenario: isStress ? .stress : .demo)
+            new = MockAgentSource(scenario: isStress ? .stress : .demo, rules: rules)
         } else {
             let root = URL(fileURLWithPath: d.string(forKey: SettingsKey.dataFolder) ?? SettingsKey.defaultDataFolder)
-            new = ClaudeCodeSource(configuration: .init(
+            var configuration = ClaudeCodeSource.Configuration(
                 dataRoot: root,
                 historyWindow: TimeInterval(max(1, d.integer(forKey: SettingsKey.historyHours))) * 3600
-            ))
+            )
+            configuration.workflowRules = rules
+            new = ClaudeCodeSource(configuration: configuration)
         }
         source = new
         let store = self.store
@@ -88,6 +102,41 @@ final class AppModel {
                 store.apply(update)
                 self?.resolvePendingOpen()
             }
+        }
+    }
+
+    // MARK: Workflow groups
+
+    func setWorkflowRules(_ rules: WorkflowRules) {
+        guard rules != workflowRules else { return }
+        workflowRules = rules
+        WorkflowRulesStorage.save(rules)
+        rulesTask?.cancel()
+        rulesTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            await self?.applyWorkflowRules()
+        }
+    }
+
+    /// Hands the current rules to the store (sidebar entries) and the source (which reclassifies every task).
+    private func applyWorkflowRules() async {
+        let rules = workflowRules
+        guard rules != appliedRules else { return }
+        if let old = appliedRules { followRenamedGroups(from: old, to: rules) }
+        appliedRules = rules
+        store.setWorkflowGroups(rules.groupNames)
+        await source?.setWorkflowRules(rules)
+    }
+
+    /// Keeps the selected sidebar entry and the project filter on a group that was renamed.
+    private func followRenamedGroups(from old: WorkflowRules, to new: WorkflowRules) {
+        let renamed = Dictionary(new.groups.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+        for group in old.groups {
+            let before = group.displayName
+            guard let after = renamed[group.id], after != before, !after.isEmpty else { continue }
+            if nav.section == .project(before) { nav.section = .project(after) }
+            if nav.filters.projects.remove(before) != nil { nav.filters.projects.insert(after) }
         }
     }
 

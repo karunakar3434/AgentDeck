@@ -10,6 +10,8 @@ enum SettingsKey {
     static let dockBadge = "dockBadge"
     static let historyHours = "historyHours"
     static let dataFolder = "dataFolder"
+    /// JSON `WorkflowRules`; absent until the groups are first edited (then `WorkflowRules.defaults` apply).
+    static let workflowRules = "workflowRules"
 
     static let defaultDataFolder = (NSHomeDirectory() as NSString).appendingPathComponent(".claude")
 
@@ -26,12 +28,41 @@ enum SettingsKey {
     }
 }
 
+/// Workflow groups in UserDefaults, next to the other settings.
+enum WorkflowRulesStorage {
+    static func load() -> WorkflowRules {
+        let d = UserDefaults.standard
+        guard let json = d.string(forKey: SettingsKey.workflowRules) ?? d.data(forKey: SettingsKey.workflowRules)
+                .map({ String(decoding: $0, as: UTF8.self) }),
+              let rules = try? JSONDecoder().decode(WorkflowRules.self, from: Data(json.utf8)) else { return .defaults }
+        return rules
+    }
+
+    /// The defaults remove the key instead, so a later build's improved defaults still apply.
+    static func save(_ rules: WorkflowRules) {
+        let d = UserDefaults.standard
+        if rules == .defaults {
+            d.removeObject(forKey: SettingsKey.workflowRules)
+        } else if let data = try? JSONEncoder().encode(rules) {
+            d.set(String(decoding: data, as: UTF8.self), forKey: SettingsKey.workflowRules)
+        }
+    }
+}
+
+enum SettingsTab: String, Hashable {
+    case general, groups, notifications, data
+}
+
 struct SettingsView: View {
+    @Environment(AppModel.self) private var app
+
     var body: some View {
-        TabView {
-            Tab("General", systemImage: "gearshape") { GeneralSettings() }
-            Tab("Notifications", systemImage: "bell.badge") { NotificationSettings() }
-            Tab("Data", systemImage: "externaldrive") { DataSettings() }
+        @Bindable var app = app
+        TabView(selection: $app.settingsTab) {
+            Tab("General", systemImage: "gearshape", value: SettingsTab.general) { GeneralSettings() }
+            Tab("Groups", systemImage: "rectangle.stack", value: SettingsTab.groups) { WorkflowGroupSettings() }
+            Tab("Notifications", systemImage: "bell.badge", value: SettingsTab.notifications) { NotificationSettings() }
+            Tab("Data", systemImage: "externaldrive", value: SettingsTab.data) { DataSettings() }
         }
         .frame(width: 480)
         .scenePadding()

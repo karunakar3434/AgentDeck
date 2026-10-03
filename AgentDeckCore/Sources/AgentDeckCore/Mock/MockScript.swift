@@ -20,7 +20,7 @@ enum MockModels {
 }
 
 enum MockToolKind: Sendable {
-    case read, grep, glob, bash, inspect, edit, write, webFetch, webSearch, todo, docs
+    case read, grep, glob, bash, inspect, edit, write, webFetch, webSearch, todo, docs, gmail
 }
 
 struct MockTaskTemplate: Sendable {
@@ -34,11 +34,30 @@ struct MockTaskTemplate: Sendable {
     let details: String
     /// What the main agent asks when it stops for input.
     let question: String
+    /// Set for work outside a code project (a Gmail check, a video pipeline): a lighter script whose
+    /// waves use these agent types.
+    var workflow: MockWorkflow? = nil
+}
+
+/// The shape of a workflow task, and the signals that put it in a workflow group.
+struct MockWorkflow: Sendable {
+    /// Agent types every wave draws from.
+    var agents: [String]
+    /// Skills the main agent runs (Skill tool) as it starts.
+    var skills: [String] = []
+    /// A skill run after the first wave: the task changes sidebar entry partway through.
+    var laterSkill: String? = nil
+    /// Agent types for waves after `laterSkill`.
+    var laterAgents: [String] = []
+    /// Tool calls (name, summary) the main agent makes after its agents finish.
+    var tools: [(name: String, summary: String)] = []
 }
 
 struct MockProject: Sendable {
     let name: String
     let path: String
+    /// The context line of agent prompts for work outside a repo; nil for a repo.
+    let about: String?
     let files: [String]
     let tests: [String]
     /// Build and test commands.
@@ -52,10 +71,12 @@ struct MockProject: Sendable {
     let tasks: [MockTaskTemplate]
     let readable: [String]
 
-    init(name: String, files: [String], tests: [String], commands: [String], inspect: [String],
-         searches: [String], globs: [String], urls: [String], queries: [String], tasks: [MockTaskTemplate]) {
+    init(name: String, path: String? = nil, about: String? = nil, files: [String], tests: [String],
+         commands: [String], inspect: [String], searches: [String], globs: [String], urls: [String],
+         queries: [String], tasks: [MockTaskTemplate]) {
         self.name = name
-        self.path = "/Users/dev/Projects/\(name)"
+        self.path = path ?? "\(MockScript.home)/Projects/\(name)"
+        self.about = about
         self.files = files
         self.tests = tests
         self.commands = commands
@@ -135,9 +156,14 @@ final class MockAgentProfile: Sendable {
 /// Which kind of work a wave of subagents does; picks the agent-type mix.
 enum MockStage: Sendable {
     case explore, plan, build, review, nested, stress
+    /// The task's own workflow agents (`MockWorkflow.agents`).
+    case workflow
 }
 
 enum MockScript {
+    /// The simulated home folder (project paths live under it).
+    static let home = "/Users/dev"
+
     // MARK: Agent types
 
     static let profiles: [MockAgentProfile] = [
@@ -277,6 +303,30 @@ enum MockScript {
                 { "Compared 3 approaches for \($0.area). The simplest fits our constraints; links and trade-offs are in the report." },
                 { "The current guidance for \($0.area) changed this year; the old approach still works but is deprecated." },
             ]),
+        MockAgentProfile(
+            type: "gmail-monitor", baseSeconds: 240, samples: 12,
+            tools: [(.gmail, 0.75), (.read, 0.1), (.write, 0.15)],
+            models: [(nil, 1)], canNest: false,
+            descriptions: [{ "Check \($0) since yesterday" }, { "Review \($0) threads" }, { "Draft replies for \($0)" }],
+            job: { "Go through \($0) in the user's Gmail. Flag what needs their attention and draft a reply where a real person expects one. Never send anything." },
+            guidance: "Use the Gmail tools only, and mark what you report on as read.",
+            report: "a short overview by category, the emails that need attention, and the IDs of the drafts you wrote",
+            results: [
+                { "\($0.n) emails in \($0.area); 2 need a reply and both have drafts. One calendar invite added." },
+                { "Nothing urgent in \($0.area). \($0.n) newsletters and receipts marked as read." },
+            ]),
+        MockAgentProfile(
+            type: "video-editor", baseSeconds: 200, samples: 7,
+            tools: [(.bash, 0.6), (.read, 0.15), (.write, 0.25)],
+            models: [(nil, 0.7), (MockModels.sonnet, 0.3)], canNest: false,
+            descriptions: [{ "Trim the \($0) clips" }, { "Export \($0) for Instagram" }, { "Enhance \($0) footage" }],
+            job: { "Edit \($0) with the ffmpeg in ~/Projects/Pubg_Tools/bin. Keep the original recordings untouched." },
+            guidance: "Check every output with ffprobe before you report back.",
+            report: "the files you wrote, each with its resolution, length and size",
+            results: [
+                { "Exported \($0.file): 1080×1920, 0:\(20 + $0.n * 4), 38 MB. \($0.area) is cut to the beat." },
+                { "\($0.area) done: \($0.n) clips trimmed and joined into \($0.file2), HDR mapped to SDR." },
+            ]),
     ]
 
     static func profile(_ type: String) -> MockAgentProfile { profiles.first { $0.type == type }! }
@@ -290,6 +340,7 @@ enum MockScript {
         case .review: reviewMix
         case .nested: nestedMix
         case .stress: stressMix
+        case .workflow: buildMix    // unused: workflow waves draw from the template's agents
         }
     }
 
@@ -312,6 +363,14 @@ enum MockScript {
         ("code-reviewer", 0.12), ("code-improver", 0.06), ("Plan", 0.05), ("docs-writer", 0.05),
         ("researcher", 0.05), ("system-architect", 0.03), ("claude-code-guide", 0.02),
     ])
+
+    /// Gmail MCP calls (name, summary).
+    static let gmailCalls: [(String, String)] = [
+        ("mcp__gmail__search_threads", "in:inbox newer_than:1d"),
+        ("mcp__gmail__get_thread", "thread 19a2f…"),
+        ("mcp__gmail__create_draft", "Re: Thursday's delivery"),
+        ("mcp__gcal__create_event", "Dentist, Tue 9:30 AM"),
+    ]
 
     static let mainTools: MockWeights<MockToolKind> = [
         (.read, 0.3), (.grep, 0.18), (.glob, 0.08), (.bash, 0.16), (.inspect, 0.08), (.edit, 0.12), (.todo, 0.08),
@@ -362,8 +421,116 @@ enum MockScript {
 
     // MARK: Projects
 
-    static let demoProjects: [MockProject] = [agentDeck, webDashboard, iosClient, infra]
-    static let stressProjects: [MockProject] = demoProjects + [paymentsAPI, dataPipeline]
+    /// Two code projects, a repo that falls under a workflow group by its folder (TradingBot), and
+    /// sessions without a project folder: the Gmail check, the PUBG pipeline and odd jobs (Others).
+    static let demoProjects: [MockProject] = [agentDeck, webDashboard, tradingBot, gmailScratch, pubgScratch, oddJobs]
+    static let stressProjects: [MockProject] = demoProjects + [iosClient, infra, paymentsAPI, dataPipeline]
+
+    /// A Claude desktop scratch workspace (a session started without a project folder).
+    static func scratchWorkspace(_ suffix: String) -> String {
+        "\(home)/Library/Application Support/Claude/scratch-workspaces/9e5ecb1e/46b18842/scratch-2026-10-03-\(suffix)"
+    }
+
+    static let gmailScratch = MockProject(
+        name: "scratch-2026-10-03-4be1f0", path: scratchWorkspace("4be1f0"),
+        about: "Context: the user's daily Gmail check, in a folder made for this session.",
+        files: ["gmail-report.md", "drafts.md"], tests: ["gmail-report.md"],
+        commands: ["date", "ls -la"], inspect: ["ls -la", "cat gmail-report.md"],
+        searches: ["needs reply"], globs: ["*.md"],
+        urls: ["https://mail.google.com/mail/u/0/#inbox"], queries: ["gmail search operators newer_than"],
+        tasks: [
+            MockTaskTemplate(
+                title: "Daily Gmail report", branch: "", files: ["gmail-report.md"],
+                areas: ["Primary inbox", "Updates", "calendar invites", "receipts", "school emails"],
+                details: "Run the gmail-monitor subagent for the last 24 hours and show me its full report.",
+                question: "Should I send the two drafts?", workflow: MockWorkflow(agents: ["gmail-monitor"])),
+            MockTaskTemplate(
+                title: "Morning brief", branch: "", files: ["gmail-report.md"],
+                areas: ["Primary inbox", "today's meetings", "Updates", "travel emails"],
+                details: "Give me my morning brief: what's in the inbox and what's on today.",
+                question: "Do you want the brief as a page?",
+                workflow: MockWorkflow(agents: ["gmail-monitor"], skills: ["anthropic-skills:morning"])),
+        ])
+
+    static let pubgScratch = MockProject(
+        name: "scratch-2026-10-03-91d7ac", path: scratchWorkspace("91d7ac"),
+        about: "Context: the user's PUBG Mobile recordings, in a folder made for this session.",
+        files: ["IMG_5033.mov", "montage-erangel.mp4", "reel-1080x1920.mp4"], tests: ["montage-erangel.mp4"],
+        commands: ["~/Projects/Pubg_Tools/bin/ffprobe IMG_5033.mov", "~/Projects/Pubg_Tools/bin/ffmpeg -i IMG_5033.mov -ss 00:02:10 -t 12 clip-03.mp4",
+                   "~/Projects/Pubg_Tools/bin/ffmpeg -i montage-erangel.mp4 -vf scale=1080:1920 reel-1080x1920.mp4"],
+        inspect: ["ls -lh ~/Projects/Screen_Recordings", "du -sh ~/Downloads/*.mp4"],
+        searches: ["kill feed"], globs: ["*.mov", "*.mp4"],
+        urls: ["https://app.metricool.com/planner"], queries: ["instagram reels best time to post"],
+        tasks: [
+            MockTaskTemplate(
+                title: "Video quality enhancement", branch: "", files: ["IMG_5033.mov"],
+                areas: ["IMG_5033", "clutch round", "night match"],
+                details: "This recording is low resolution. Upscale it and make it look sharper without changing the length.",
+                question: "Keep the original frame rate?",
+                workflow: MockWorkflow(agents: ["video-editor"], skills: ["video-enhance"])),
+            MockTaskTemplate(
+                title: "PUBG montage from Saturday's matches", branch: "", files: ["montage-erangel.mp4"],
+                areas: ["Erangel squad", "sniper kills", "final circle"],
+                details: "Find my best kills in Saturday's recordings and cut a montage to the usual track.",
+                question: "Use the new track or last week's?",
+                workflow: MockWorkflow(agents: ["video-editor"], skills: ["anthropic-skills:pubg-montage"])),
+            MockTaskTemplate(
+                title: "Schedule this week's Instagram reels", branch: "", files: ["reel-1080x1920.mp4"],
+                areas: ["Saturday montage", "clutch clip", "sniper reel"],
+                details: "Make vertical copies of the montages that aren't on Instagram yet and schedule them through Metricool.",
+                question: "Post Saturday at 6:30 PM?",
+                workflow: MockWorkflow(agents: ["video-editor"], skills: ["anthropic-skills:pubg-instagram-post"],
+                                       tools: [("mcp__metricool__createScheduledPost", "Instagram reel · Sat 6:30 PM")])),
+        ])
+
+    static let oddJobs = MockProject(
+        name: "scratch-2026-10-03-0c5e2a", path: scratchWorkspace("0c5e2a"),
+        about: "Context: a one-off job in a folder made for this session.",
+        files: ["lease.pdf", "notes.md", "IMG_6120.mov"], tests: ["notes.md"],
+        commands: ["pdftotext lease.pdf -", "ls -la"], inspect: ["ls -la"],
+        searches: ["termination"], globs: ["*.pdf", "*.md"],
+        urls: ["https://www.consumerfinance.gov/"], queries: ["lease early termination clause"],
+        tasks: [
+            MockTaskTemplate(
+                title: "Summarize the lease agreement PDF", branch: "", files: ["lease.pdf"],
+                areas: ["renewal terms", "fees and deposits", "termination clause"],
+                details: "Read lease.pdf and tell me what I'm agreeing to, especially anything unusual.",
+                question: "Do you want this as a checklist?", workflow: MockWorkflow(agents: ["general-purpose"])),
+            // Starts in Others; the pubg-montage skill partway through moves it to PubgMontages.
+            MockTaskTemplate(
+                title: "Cut last night's best moments", branch: "", files: ["IMG_6120.mov"],
+                areas: ["last night's recording", "squad wipe", "final circle"],
+                details: "IMG_6120.mov is last night's game. Find the best moments first; then we'll decide what to make.",
+                question: "Turn these into a montage?",
+                workflow: MockWorkflow(agents: ["general-purpose"], laterSkill: "anthropic-skills:pubg-montage",
+                                       laterAgents: ["video-editor"])),
+        ])
+
+    static let tradingBot = MockProject(
+        name: "Multi-agent-trading-bot",
+        files: ["agents/risk_manager.py", "agents/momentum.py", "backtest/engine.py", "data/loader.py",
+                "orders/book.py", "config/strategies.yaml", "pyproject.toml"],
+        tests: ["tests/test_backtest.py", "tests/test_risk_manager.py"],
+        commands: ["pytest -q", "ruff check .", "python -m backtest.run --strategy momentum --year 2025"],
+        inspect: ["git log --oneline -15", "git diff --stat", "ls agents"],
+        searches: ["def on_signal", "class RiskManager", "max_drawdown", "TODO(risk)"],
+        globs: ["agents/**/*.py", "tests/**/*.py"],
+        urls: ["https://www.backtrader.com/docu/", "https://docs.alpaca.markets/"],
+        queries: ["position sizing kelly criterion", "backtest lookahead bias"],
+        tasks: [
+            MockTaskTemplate(
+                title: "Backtest the momentum strategy on 2025 data", branch: "feature/momentum-2025",
+                files: ["agents/momentum.py", "backtest/engine.py", "data/loader.py"],
+                areas: ["momentum signals", "data loading", "slippage model", "results report"],
+                details: "Run the momentum agent against all of 2025 with realistic slippage and report drawdown, Sharpe and win rate.",
+                question: "Include crypto pairs in the backtest?"),
+            MockTaskTemplate(
+                title: "Add a risk-manager agent that can veto trades", branch: "feature/risk-veto",
+                files: ["agents/risk_manager.py", "orders/book.py", "config/strategies.yaml"],
+                areas: ["veto rules", "exposure limits", "agent messaging", "order book"],
+                details: "The strategy agents trade without any limit. Add a risk-manager agent that sees every order first and can block it.",
+                question: "Should a veto be logged to Slack?"),
+        ])
 
     static let agentDeck = MockProject(
         name: "AgentDeck",

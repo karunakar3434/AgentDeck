@@ -9,6 +9,8 @@ enum SnapshotBuilder {
         var status: StatusRules.Result
         /// Model resolution consulted agent definitions.
         var usedDefinitions: Bool
+        /// What the snapshot's sidebar entry was decided from (stored with its history row).
+        var signals: TaskSignals
     }
 
     /// - Parameters:
@@ -16,10 +18,12 @@ enum SnapshotBuilder {
     ///   - estimate: the live estimate for an unfinished run (type, family).
     ///   - finishedEstimate: the estimate for a finished run that wasn't watched finishing (no frozen
     ///     estimate), computed without the run's own sample: run id (= tool-use id), type, family.
+    ///   - classifier: decides the sidebar entry (`projectName`, `projectKind`).
     static func build(_ s: SessionState, status: StatusRules.Result,
                       definitionModel: (String) -> String?,
                       estimate: (String, ModelFamily) -> DurationEstimate?,
-                      finishedEstimate: (String, String, ModelFamily) -> DurationEstimate?) -> Output {
+                      finishedEstimate: (String, String, ModelFamily) -> DurationEstimate?,
+                      classifier: WorkflowClassifier) -> Output {
         var usedDefinitions = false
         let mainResolution = ModelResolver.resolve(s.main, isMain: true, definitionModel: definitionModel)
         let mainModel = mainResolution.model
@@ -97,11 +101,19 @@ enum SnapshotBuilder {
                 recentTools: run.own.recentTools, depth: parent == main.id ? 1 : run.depth))
         }
 
+        let signals = signals(s, title: title, projectPath: projectPath)
+        let entry = classifier.classify(signals)
         let snapshot = TaskSnapshot(
-            id: s.id, source: source, projectName: projectName(projectPath), projectPath: projectPath, title: title,
+            id: s.id, source: source, projectName: entry.name, projectPath: projectPath, title: title,
             status: status.task, startedAt: startedAt, lastActivityAt: lastActivity, endedAt: status.endedAt,
-            mainModel: mainModel, gitBranch: s.gitBranch, runs: runs)
-        return Output(snapshot: snapshot, status: status, usedDefinitions: usedDefinitions)
+            mainModel: mainModel, gitBranch: s.gitBranch, runs: runs, projectKind: entry.kind)
+        return Output(snapshot: snapshot, status: status, usedDefinitions: usedDefinitions, signals: signals)
+    }
+
+    /// The workflow signals of a session: working folder, title, agent types, skills and tool names.
+    static func signals(_ s: SessionState, title: String, projectPath: String) -> TaskSignals {
+        TaskSignals(workingFolder: projectPath, title: title, agentTypes: s.runs.values.map(\.agentType),
+                    skills: Array(s.skills), tools: Array(s.toolNames))
     }
 
     /// Custom/AI title when present, else the first human prompt (one line, ≤ 120 chars).
@@ -112,13 +124,6 @@ enum SnapshotBuilder {
             }
         }
         return "Untitled session"
-    }
-
-    /// Last path component of the project path; Claude desktop scratch workspaces share one name.
-    static func projectName(_ path: String) -> String {
-        if path.contains("/scratch-workspaces/") { return "Scratch" }
-        let name = (path as NSString).lastPathComponent
-        return name.isEmpty ? "Unknown project" : name
     }
 
     /// The duration recorded as this run's sample: exact, else its own first-to-last line span.

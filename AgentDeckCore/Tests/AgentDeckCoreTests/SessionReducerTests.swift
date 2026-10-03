@@ -329,12 +329,16 @@ import Testing
         #expect(s.main.prompt != "txt-d236372b")       // the queued_command's prompt text
     }
 
-    @Test func scratchWorkspacesShareOneProjectName() {
+    @Test func scratchWorkspaceSessionGoesToItsWorkflowGroup() {
+        // A Claude desktop scratch workspace isn't a project folder; the gmail-monitor run decides the entry.
         let snap = Fixtures.snapshot(Fixtures.reduce(Fixtures.s08cb))
-        #expect(snap.projectName == "Scratch")
+        #expect(snap.projectName == "GmailMonitor")
+        #expect(snap.projectKind == .workflow)
         #expect(snap.projectPath.contains("/scratch-workspaces/"))
         #expect(snap.projectPath.hasSuffix("scratch-2026-10-02-cfe996"))
-        #expect(SnapshotBuilder.projectName("/Users/dev/localbiz") == "localbiz")
+        let localbiz = Fixtures.snapshot(Fixtures.reduce(Fixtures.f275))
+        #expect(localbiz.projectName == "localbiz")
+        #expect(localbiz.projectKind == .folder)
     }
 
     // MARK: Held notices

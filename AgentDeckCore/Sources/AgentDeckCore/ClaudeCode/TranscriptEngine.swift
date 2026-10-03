@@ -83,6 +83,8 @@ actor TranscriptEngine {
     var pids: [Int32: PidEntry] = [:]
     var pidBySession: [String: Int32] = [:]
     var definitions: AgentDefinitions
+    /// Decides each task's sidebar entry; replaced by `setWorkflowRules`.
+    var workflowClassifier: WorkflowClassifier
 
     // MARK: Emission
 
@@ -141,6 +143,7 @@ actor TranscriptEngine {
         classifier = PathClassifier(dataRoot: configuration.dataRoot)
         rootPath = classifier.canonicalRoot
         definitions = AgentDefinitions(dataRoot: classifier.canonicalRoot)
+        workflowClassifier = WorkflowClassifier(rules: configuration.workflowRules, home: configuration.homeDirectory)
     }
 
     deinit {
@@ -233,6 +236,15 @@ actor TranscriptEngine {
         continuation?.finish()
         continuation = nil
         await history?.flush()
+    }
+
+    /// Reclassifies every task, parsed sessions and stored history alike, from the signals already in
+    /// memory: no transcript is read again.
+    func setWorkflowRules(_ rules: WorkflowRules) {
+        guard rules != workflowClassifier.rules else { return }
+        workflowClassifier = WorkflowClassifier(rules: rules, home: workflowClassifier.home)
+        for (sid, s) in sessions where s.mainSeen { markDirty(sid) }
+        for id in storedTasks.keys { markDirty(id) }
     }
 
     // MARK: Test seams
@@ -806,7 +818,7 @@ actor TranscriptEngine {
                     return nil
                 }
                 deadlines[id] = end.addingTimeInterval(configuration.historyWindow)
-                return withCurrentEstimates(stored.snapshot)
+                return classified(withCurrentEstimates(stored.snapshot), signals: stored.signals)
             }
             return nil
         }
@@ -822,10 +834,11 @@ actor TranscriptEngine {
             estimate: { type, family in self.estimator.estimate(agentType: type, family: family) },
             finishedEstimate: { runID, type, family in
                 self.estimate(excludingRun: runID, agentType: type, family: family)
-            })
+            },
+            classifier: workflowClassifier)
         s.usedDefinitions = output.usedDefinitions
         sessions[id] = s
-        recordTransitions(s, output.snapshot, status: status, now: now)
+        recordTransitions(s, output.snapshot, signals: output.signals, status: status, now: now)
         if !status.inScope, processState(for: id)?.alive != true {
             // Left the window: the history DB keeps it; free the in-memory state.
             evictSession(id)
@@ -859,6 +872,16 @@ actor TranscriptEngine {
             let family = model.id == nil ? mainFamily : model.family
             s.runs[id]?.frozenEstimate = estimator.estimate(agentType: run.agentType, family: family)
         }
+    }
+
+    /// A stored (history) snapshot's entry, decided again from its stored signals under the current rules.
+    /// The name saved with the row is never trusted: older builds stored the raw folder name.
+    func classified(_ snapshot: TaskSnapshot, signals: TaskSignals) -> TaskSnapshot {
+        var snap = snapshot
+        let entry = workflowClassifier.classify(signals)
+        snap.projectName = entry.name
+        snap.projectKind = entry.kind
+        return snap
     }
 
     /// A stored (history) snapshot with every finished run's estimate recomputed from the other samples.
@@ -917,7 +940,8 @@ actor TranscriptEngine {
     }
 
     /// `run_duration` rows, live estimator samples and finished-task history (architecture §6, §9, §11).
-    private func recordTransitions(_ s: SessionState, _ snapshot: TaskSnapshot, status: StatusRules.Result, now: Date) {
+    private func recordTransitions(_ s: SessionState, _ snapshot: TaskSnapshot, signals: TaskSignals,
+                                   status: StatusRules.Result, now: Date) {
         guard let history else { return }
         var changedTypes: Set<String> = []
         for run in snapshot.runs.dropFirst() {
@@ -954,13 +978,14 @@ actor TranscriptEngine {
         }
         if !changedTypes.isEmpty { redirtyEstimates(types: changedTypes, except: s.id) }
 
-        // Finished tasks go to history (for tier-2 loads and DB-only display after the transcript is gone).
+        // Finished tasks go to history (for tier-2 loads and DB-only display after the transcript is gone),
+        // with their entry and the signals it was decided from. A rule change re-saves the entry.
         if snapshot.status == .done || snapshot.status == .failed, status.inScope,
            let mainPath = sessionFiles[s.id]?.main, let fs = files[mainPath] {
-            let signature = "\(snapshot.status.rawValue)|\(fs.size)|\(snapshot.lastActivityAt.timeIntervalSinceReferenceDate)|\(snapshot.runs.count)"
+            let signature = "\(snapshot.status.rawValue)|\(fs.size)|\(snapshot.lastActivityAt.timeIntervalSinceReferenceDate)|\(snapshot.runs.count)|\(snapshot.projectName)"
             if savedTasks[s.id] != signature {
                 savedTasks[s.id] = signature
-                history.enqueue(.finishedTask(StoredTask(snapshot: snapshot, transcriptPath: mainPath,
+                history.enqueue(.finishedTask(StoredTask(snapshot: snapshot, signals: signals, transcriptPath: mainPath,
                                                          fileID: fs.fileID, fileSize: fs.size, fileMtime: fs.mtime)))
                 recordScanCache(s.id)
             }

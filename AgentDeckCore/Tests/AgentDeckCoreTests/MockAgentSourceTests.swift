@@ -134,6 +134,32 @@ struct MockAgentSourceTests {
         #expect(structuralProblems(Array(latest.values)) == [])
     }
 
+    @Test func demoHasTasksForEveryWorkflowGroupFolderProjectsAndOthers() throws {
+        let world = MockWorld(scenario: .demo, seed: 5, startDate: start)
+        let first = world.takeUpdate().changed
+        #expect(Set(first.map(\.projectName)).isSuperset(of: ["GmailMonitor", "PubgMontages", "TradingBot",
+                                                               "AgentDeck", "web-dashboard", "Others"]))
+        #expect(first.allSatisfy { $0.projectKind != nil })
+        #expect(first.contains { $0.projectName == "TradingBot" && $0.projectPath.hasSuffix("/Multi-agent-trading-bot") })
+
+        // The scratch task that runs the pubg-montage skill partway through moves from Others to PubgMontages.
+        let moving = try #require(first.first { $0.title == "Cut last night's best moments" })
+        #expect(moving.projectName == "Others")
+        var moved = false
+        for step in 1...1200 where !moved {
+            world.advance(to: Double(step) * 0.5)
+            moved = world.takeUpdate().changed.first { $0.id == moving.id }?.projectName == "PubgMontages"
+        }
+        #expect(moved)
+
+        // New rules reclassify every task at once.
+        var rules = WorkflowRules.defaults
+        rules.groups[0].name = "Inbox"
+        world.setRules(rules)
+        #expect(world.takeUpdate().changed.contains { $0.projectName == "Inbox" })
+        #expect(!world.snapshots.contains { $0.projectName == "GmailMonitor" })
+    }
+
     @Test func stressKeepsTwentyTasksBusy() {
         let world = MockWorld(scenario: .stress, seed: 11, startDate: start)
         var minActive = Int.max

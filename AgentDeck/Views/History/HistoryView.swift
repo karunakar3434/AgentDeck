@@ -85,7 +85,7 @@ private struct HistoryRow: View {
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 8) {
-                Label(task.projectName, systemImage: "folder")
+                Label(task.projectName, systemImage: task.projectKind.symbol())
                     .lineLimit(1)
                 if !runs.isEmpty {
                     Label("\(runs.count) agent\(runs.count == 1 ? "" : "s")", systemImage: "person.2")

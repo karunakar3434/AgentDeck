@@ -10,6 +10,9 @@ public protocol AgentSource: AnyObject, Sendable {
     func updates() async -> AsyncStream<DeckUpdate>
     /// Idempotent: stops watching and timers, flushes pending writes, and finishes the stream.
     func stop() async
+    /// Reclassifies every task, history included, under new workflow rules; changed tasks arrive in the
+    /// next update. Nothing is re-read from disk.
+    func setWorkflowRules(_ rules: WorkflowRules) async
 }
 
 /// Whether a source can do its job, reported through `DeckUpdate.health`.

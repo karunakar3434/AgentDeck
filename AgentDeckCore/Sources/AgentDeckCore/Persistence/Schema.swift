@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 
 /// Migrations for the history database (architecture §11).
@@ -42,7 +43,37 @@ enum HistorySchema {
                 """)
         }
 
+        // Workflow groups: the signals each task's sidebar entry is decided from (JSON `TaskSignals`), so a
+        // rule change reclassifies history without reading transcripts. Nullable, so an older build can
+        // still write rows.
+        migrator.registerMigration("v2") { db in
+            try db.execute(sql: "ALTER TABLE history_task ADD COLUMN signals TEXT")
+            try backfillSignals(db)
+        }
+
         return migrator
+    }
+
+    /// v2: fills `signals` for rows written before it, from what each row kept: the working folder, the
+    /// title, the agent types, and the Skill and tool names among each agent's recent tool calls
+    /// (`TaskSignals(snapshot:)`). A row that can't be decoded keeps NULL; reads recover it the same way.
+    static func backfillSignals(_ db: Database) throws {
+        let decoder = SnapshotCoding.makeDecoder()
+        let encoder = SnapshotCoding.makeEncoder()
+        var runsByTask: [String: [AgentRunSnapshot]] = [:]
+        for row in try Row.fetchAll(db, sql: "SELECT task_id, snapshot FROM history_run ORDER BY task_id, ord") {
+            let blob: Data = row["snapshot"]
+            guard let run = try? decoder.decode(AgentRunSnapshot.self, from: blob) else { continue }
+            runsByTask[row["task_id"], default: []].append(run)
+        }
+        for row in try Row.fetchAll(db, sql: "SELECT id, snapshot FROM history_task WHERE signals IS NULL") {
+            let id: String = row["id"]
+            let blob: Data = row["snapshot"]
+            guard var snapshot = try? decoder.decode(TaskSnapshot.self, from: blob) else { continue }
+            snapshot.runs = runsByTask[id] ?? []
+            let signals = String(decoding: try encoder.encode(TaskSignals(snapshot: snapshot)), as: UTF8.self)
+            try db.execute(sql: "UPDATE history_task SET signals = ? WHERE id = ?", arguments: [signals, id])
+        }
     }
 
     /// The tables created by the migrations, for tests and diagnostics.

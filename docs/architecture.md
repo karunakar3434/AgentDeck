@@ -138,6 +138,10 @@ struct CoreEnvironment: Sendable {
   - Main run: id `main:<sessionId>`, `agentType` `"main"`, description = task title, prompt = latest human prompt.
   - Subagent run id = the Agent `tool_use.id`, or `agent:<agentId>` when there is no `toolUseId` (forks).
   - `runs` order: main first, then by (startedAt, file order).
+  - `projectName` is the sidebar entry (a workflow group, the folder's name, or "Others") and
+    `projectKind` says which; `projectPath` stays the real working folder. Decided by the pure
+    `WorkflowClassifier` from `TaskSignals` (data-sources §9); `AgentSource.setWorkflowRules`
+    reclassifies every task, history included, without re-reading anything.
 - **Emission scope:** a task is emitted while its pid is live, or it is active or idle, or
   `(endedAt ?? lastActivityAt) >= now − historyWindow`. This includes DB-only tasks whose transcript is gone.
   When a task leaves the window it is sent in `removed`.
@@ -441,6 +445,9 @@ CREATE TABLE scan_cache (                        -- estimate-scan progress per m
   size INTEGER NOT NULL, mtime DOUBLE NOT NULL, offset INTEGER NOT NULL);
 ```
 
+- **Migration `v2`** adds `history_task.signals TEXT` (JSON `TaskSignals`: working folder, title, agent
+  types, skills, tool names) and fills it for existing rows from their snapshots. `project_name` is
+  kept but never read for display (data-sources §9).
 - **Columns vs blobs:** columns hold only what we query, sort or prune by. The rest is the existing Codable
   snapshot, so additive snapshot fields need no migration (new fields must be optional). A row that fails to
   decode is ignored and rebuilt from the transcript if it still exists.

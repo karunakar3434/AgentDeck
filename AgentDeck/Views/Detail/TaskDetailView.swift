@@ -61,7 +61,15 @@ struct TaskDetailView: View {
                 .textSelection(.enabled)
                 .matchedGeometryEffect(id: "title-\(task.id)", in: namespace, properties: .position)
             HStack(spacing: 10) {
-                Label(task.projectName, systemImage: "folder")
+                Label(task.projectName, systemImage: task.projectKind.symbol())
+                if !task.projectPath.isEmpty {
+                    // The real working folder, whatever the entry (a workflow group's scratch folder, say).
+                    Text((task.projectPath as NSString).abbreviatingWithTildeInPath)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .help(task.projectPath)
+                        .layoutPriority(-1)
+                }
                 if let branch = task.gitBranch, !branch.isEmpty, branch != "HEAD" {
                     Label(branch, systemImage: "arrow.triangle.branch")
                 }

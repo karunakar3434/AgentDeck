@@ -115,11 +115,13 @@ struct HistoryTaskRecord: Codable, Sendable, FetchableRecord, PersistableRecord 
     var fileMtime: Double
     /// JSON `TaskSnapshot` with `runs = []`.
     var snapshot: Data
+    /// JSON `TaskSignals` (v2). NULL for rows an older build wrote after the migration.
+    var signals: String?
 
     enum CodingKeys: String, CodingKey {
         case id, status, projectName = "project_name", startedAt = "started_at", endedAt = "ended_at"
         case transcriptPath = "transcript_path", fileID = "file_id", fileSize = "file_size"
-        case fileMtime = "file_mtime", snapshot
+        case fileMtime = "file_mtime", snapshot, signals
     }
 }
 
@@ -171,6 +173,7 @@ struct ScanCacheRecord: Codable, Sendable, FetchableRecord, PersistableRecord {
 extension StoredTask {
     /// The task row (snapshot without runs) and one row per run, `ord` = index in `snapshot.runs`.
     /// `fileID` is stored as its bit pattern: it can exceed `Int64.max` (`st_dev << 48`).
+    /// `project_name` records the entry at save time; reads never rely on it.
     func records(encoder: JSONEncoder) throws -> (task: HistoryTaskRecord, runs: [HistoryRunRecord]) {
         var header = snapshot
         header.runs = []
@@ -179,7 +182,8 @@ extension StoredTask {
             startedAt: HistoryTime.column(snapshot.startedAt),
             endedAt: HistoryTime.column(snapshot.endedAt ?? snapshot.lastActivityAt),
             transcriptPath: transcriptPath, fileID: Int64(bitPattern: fileID), fileSize: fileSize,
-            fileMtime: HistoryTime.column(fileMtime), snapshot: try encoder.encode(header))
+            fileMtime: HistoryTime.column(fileMtime), snapshot: try encoder.encode(header),
+            signals: String(decoding: try encoder.encode(signals), as: UTF8.self))
         let runs = try snapshot.runs.enumerated().map { index, run in
             var run = run
             if run.recentTools.count > SnapshotCoding.recentToolsLimit {
@@ -191,7 +195,8 @@ extension StoredTask {
         return (task, runs)
     }
 
-    /// Reassembles a stored task; nil when the task row or any of its run rows fails to decode.
+    /// Reassembles a stored task; nil when the task row or any of its run rows fails to decode. Signals
+    /// missing or unreadable (a row an older build wrote) are recovered from the snapshot.
     init?(task: HistoryTaskRecord, runs: [HistoryRunRecord], decoder: JSONDecoder) {
         guard var snapshot = try? decoder.decode(TaskSnapshot.self, from: task.snapshot) else { return nil }
         var decoded: [AgentRunSnapshot] = []
@@ -201,7 +206,8 @@ extension StoredTask {
             decoded.append(run)
         }
         snapshot.runs = decoded
-        self.init(snapshot: snapshot, transcriptPath: task.transcriptPath,
+        let signals = task.signals.flatMap { try? decoder.decode(TaskSignals.self, from: Data($0.utf8)) }
+        self.init(snapshot: snapshot, signals: signals, transcriptPath: task.transcriptPath,
                   fileID: UInt64(bitPattern: task.fileID), fileSize: task.fileSize,
                   fileMtime: HistoryTime.date(task.fileMtime))
     }

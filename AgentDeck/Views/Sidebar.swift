@@ -26,12 +26,12 @@ struct Sidebar: View {
                     .tag(SidebarSection.history)
             }
 
-            if !store.projects.isEmpty {
-                Section("Projects") {
-                    ForEach(store.projects, id: \.self) { name in
-                        ProjectRow(name: name, active: store.activeCountByProject[name] ?? 0)
-                            .tag(SidebarSection.project(name))
-                    }
+            // Workflow groups in their configured order, folder projects A–Z, then Others.
+            Section("Projects") {
+                ForEach(store.projects, id: \.self) { name in
+                    ProjectRow(name: name, kind: store.projectKind(of: name),
+                               active: store.activeCountByProject[name] ?? 0)
+                        .tag(SidebarSection.project(name))
                 }
             }
         }
@@ -44,13 +44,14 @@ struct Sidebar: View {
 
 private struct ProjectRow: View {
     var name: String
+    var kind: ProjectKind
     var active: Int
 
     var body: some View {
         Label {
             Text(name).lineLimit(1)
         } icon: {
-            Image(systemName: active > 0 ? "folder.fill" : "folder")
+            Image(systemName: kind.symbol(filled: active > 0))
         }
         .badge(active)
     }

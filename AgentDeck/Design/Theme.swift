@@ -60,6 +60,17 @@ extension RunStatus {
     }
 }
 
+extension ProjectKind {
+    /// Sidebar and card icon; `filled` while the entry has active tasks.
+    func symbol(filled: Bool = false) -> String {
+        switch self {
+        case .workflow: filled ? "rectangle.stack.fill" : "rectangle.stack"
+        case .folder: filled ? "folder.fill" : "folder"
+        case .others: filled ? "tray.fill" : "tray"
+        }
+    }
+}
+
 extension ModelFamily {
     /// One distinct hue per model family.
     var color: Color {

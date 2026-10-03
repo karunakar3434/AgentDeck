@@ -11,23 +11,27 @@ public final class MockAgentSource: AgentSource {
     private let simulator: MockSimulator
 
     /// A fresh, randomly seeded simulation running in real time.
-    public convenience init(scenario: Scenario) {
-        self.init(scenario: scenario, seed: UInt64.random(in: .min ... .max))
+    public convenience init(scenario: Scenario, rules: WorkflowRules = .defaults) {
+        self.init(scenario: scenario, seed: UInt64.random(in: .min ... .max), rules: rules)
     }
 
     /// - Parameters:
     ///   - seed: Same seed, same simulation.
     ///   - speed: Simulated seconds per real second (1 = real time). Snapshot dates use simulated time.
     ///   - startDate: Simulated time when `updates()` is first called; defaults to the real time then.
-    public init(scenario: Scenario, seed: UInt64, speed: Double = 1, startDate: Date? = nil) {
+    ///   - rules: Workflow groups that decide each task's sidebar entry.
+    public init(scenario: Scenario, seed: UInt64, speed: Double = 1, startDate: Date? = nil,
+                rules: WorkflowRules = .defaults) {
         precondition(speed > 0, "speed must be positive")
         self.scenario = scenario
-        simulator = MockSimulator(scenario: scenario, seed: seed, speed: speed, startDate: startDate)
+        simulator = MockSimulator(scenario: scenario, seed: seed, speed: speed, startDate: startDate, rules: rules)
     }
 
     public func updates() async -> AsyncStream<DeckUpdate> { await simulator.updates() }
 
     public func stop() async { await simulator.stop() }
+
+    public func setWorkflowRules(_ rules: WorkflowRules) async { await simulator.setWorkflowRules(rules) }
 }
 
 /// Runs a `MockWorld` against the real clock and serves its changes as a pull-based stream.
@@ -48,6 +52,7 @@ actor MockSimulator {
     private let seed: UInt64
     private let speed: Double
     private let requestedStart: Date?
+    private var rules: WorkflowRules
     private let clock = ContinuousClock()
 
     private var world: MockWorld?
@@ -58,11 +63,12 @@ actor MockSimulator {
     private var stream: AsyncStream<DeckUpdate>?
     private var stopped = false
 
-    init(scenario: MockAgentSource.Scenario, seed: UInt64, speed: Double, startDate: Date?) {
+    init(scenario: MockAgentSource.Scenario, seed: UInt64, speed: Double, startDate: Date?, rules: WorkflowRules) {
         self.scenario = scenario
         self.seed = seed
         self.speed = speed
         self.requestedStart = startDate
+        self.rules = rules
         origin = clock.now
     }
 
@@ -77,7 +83,7 @@ actor MockSimulator {
             stream = finished
             return finished
         }
-        world = MockWorld(scenario: scenario, seed: seed, startDate: requestedStart ?? Date())
+        world = MockWorld(scenario: scenario, seed: seed, startDate: requestedStart ?? Date(), rules: rules)
         origin = clock.now
         loop = Task { [weak self] in
             while let deadline = await self?.tick() {
@@ -99,6 +105,16 @@ actor MockSimulator {
         world = nil
         waiter?.resume(returning: false)
         waiter = nil
+    }
+
+    func setWorkflowRules(_ rules: WorkflowRules) {
+        self.rules = rules
+        guard let world else { return }
+        world.setRules(rules)
+        if world.hasChanges, let waiter {
+            self.waiter = nil
+            waiter.resume(returning: true)
+        }
     }
 
     // MARK: Simulation loop

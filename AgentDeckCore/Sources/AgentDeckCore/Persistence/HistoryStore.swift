@@ -33,12 +33,26 @@ struct RunDurationRow: Sendable, Hashable {
 
 /// A finished task with the transcript identity it was built from.
 struct StoredTask: Sendable, Hashable {
-    /// With runs (`recentTools` trimmed to 20 when stored).
+    /// With runs (`recentTools` trimmed to 20 when stored). Its `projectName` is the entry when it was
+    /// saved; the engine decides the entry again from `signals`.
     var snapshot: TaskSnapshot
+    /// What the task's sidebar entry is decided from.
+    var signals: TaskSignals
     var transcriptPath: String
     var fileID: UInt64
     var fileSize: Int64
     var fileMtime: Date
+
+    /// `signals` defaults to what the snapshot alone tells (`TaskSignals(snapshot:)`).
+    init(snapshot: TaskSnapshot, signals: TaskSignals? = nil, transcriptPath: String, fileID: UInt64,
+         fileSize: Int64, fileMtime: Date) {
+        self.snapshot = snapshot
+        self.signals = signals ?? TaskSignals(snapshot: snapshot)
+        self.transcriptPath = transcriptPath
+        self.fileID = fileID
+        self.fileSize = fileSize
+        self.fileMtime = fileMtime
+    }
 }
 
 /// How far the estimate scan has read one main transcript.
