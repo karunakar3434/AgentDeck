@@ -32,16 +32,20 @@ public enum ModelFamily: String, Sendable, Hashable, Codable, CaseIterable, Comp
 /// "claude-haiku-4-5-20251001" → "Haiku 4.5", "sonnet" → "Sonnet".
 public enum ModelName {
     public static func short(_ modelID: String) -> String {
-        let id = modelID.lowercased()
+        // Drop a context-window suffix such as "[1m]".
+        let id = String(modelID.lowercased().prefix { $0 != "[" })
         let family = ModelFamily(modelID: id)
         guard family != .other else { return modelID }
         // Collect the version digits that follow the family name, dropping date stamps.
         guard let range = id.range(of: family.rawValue) else { return family.displayName }
-        let tail = id[range.upperBound...]
-        let parts = tail.split(whereSeparator: { $0 == "-" || $0 == "." || $0 == "_" })
-            .filter { $0.allSatisfy(\.isNumber) && $0.count <= 2 }
-            .prefix(2)
+        let tail = String(id[range.upperBound...])
+        var parts: [String] = []
+        for piece in tail.split(separator: "-") where parts.count < 2 {
+            let digits = String(piece)
+            if !digits.isEmpty, digits.count <= 2, digits.allSatisfy(\.isNumber) { parts.append(digits) }
+        }
         if parts.isEmpty { return family.displayName }
-        return "\(family.displayName) \(parts.joined(separator: "."))"
+        let version: String = parts.joined(separator: ".")
+        return family.displayName + " " + version
     }
 }
