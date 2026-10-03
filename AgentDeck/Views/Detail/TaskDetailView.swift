@@ -27,7 +27,7 @@ struct TaskDetailView: View {
                             .padding(.top, 6)
                             .transition(.opacity)
                     } else {
-                        Color.clear.frame(height: CGFloat(task.runIDs.count) * 24 + 46)
+                        Color.clear.frame(height: max(80, CGFloat(task.runIDs.count) * 24 + 40) + 20)
                     }
                 }
             }

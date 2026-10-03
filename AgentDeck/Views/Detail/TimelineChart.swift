@@ -97,6 +97,7 @@ struct TimelineChart: View {
             }
         }
         .frame(height: max(80, CGFloat(bars.count) * 24 + 40))
+        .padding(.top, 14)   // room for the "now" label inside the flattened layer's bounds
         .drawingGroup()
     }
 }
