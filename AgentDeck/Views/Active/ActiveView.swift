@@ -24,15 +24,18 @@ struct ActiveView: View {
                             .transition(.opacity)
                     }
 
-                    ForEach(taskIDs, id: \.self) { id in
-                        if let task = store.tasks[id] {
-                            TaskCard(task: task, namespace: namespace, isHighlighted: nav.highlightedTaskID == id)
-                                .id(id)
-                                .onTapGesture { nav.openTask(id) }
-                                .transition(.asymmetric(
-                                    insertion: .move(edge: .top).combined(with: .opacity),
-                                    removal: .opacity.combined(with: .scale(scale: 0.96))
-                                ))
+                    // One column beside an editor, more as the window widens.
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 12, alignment: .top)], spacing: 12) {
+                        ForEach(taskIDs, id: \.self) { id in
+                            if let task = store.tasks[id] {
+                                TaskCard(task: task, namespace: namespace, isHighlighted: nav.highlightedTaskID == id)
+                                    .id(id)
+                                    .onTapGesture { nav.openTask(id) }
+                                    .transition(.asymmetric(
+                                        insertion: .scale(scale: 0.96).combined(with: .opacity),
+                                        removal: .opacity.combined(with: .scale(scale: 0.96))
+                                    ))
+                            }
                         }
                     }
                 }

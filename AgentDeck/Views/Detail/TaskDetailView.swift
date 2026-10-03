@@ -45,7 +45,7 @@ struct TaskDetailView: View {
                 .matchedGeometryEffect(id: "title-\(task.id)", in: namespace, properties: .position)
             HStack(spacing: 10) {
                 Label(task.projectName, systemImage: "folder")
-                if let branch = task.gitBranch, !branch.isEmpty {
+                if let branch = task.gitBranch, !branch.isEmpty, branch != "HEAD" {
                     Label(branch, systemImage: "arrow.triangle.branch")
                 }
                 ModelBadge(model: task.mainModel)

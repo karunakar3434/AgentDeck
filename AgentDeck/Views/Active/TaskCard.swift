@@ -17,7 +17,7 @@ struct TaskCard: View {
                     .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
                 Text(task.title)
                     .font(.headline)
-                    .lineLimit(2)
+                    .lineLimit(2, reservesSpace: true)
                     .matchedGeometryEffect(id: "title-\(task.id)", in: namespace, properties: .position)
                 Spacer(minLength: 8)
                 TaskElapsedText(task: task)
@@ -27,7 +27,7 @@ struct TaskCard: View {
             HStack(spacing: 6) {
                 Label(task.projectName, systemImage: "folder")
                     .lineLimit(1)
-                if let branch = task.gitBranch, !branch.isEmpty {
+                if let branch = task.gitBranch, !branch.isEmpty, branch != "HEAD" {
                     Label(branch, systemImage: "arrow.triangle.branch")
                         .lineLimit(1)
                 }
@@ -40,6 +40,7 @@ struct TaskCard: View {
             HStack(spacing: 8) {
                 AvatarStack(task: task)
                 Spacer(minLength: 4)
+                Group {
                 if task.status == .waiting {
                     Label("Waiting on you", systemImage: "hand.raised.fill")
                         .font(.caption.weight(.medium))
@@ -47,6 +48,9 @@ struct TaskCard: View {
                 } else {
                     TaskETAText(task: task)
                 }
+                }
+                .fixedSize()
+                .layoutPriority(1)
             }
         }
         .padding(14)
@@ -70,13 +74,21 @@ struct TaskCard: View {
     }
 }
 
-/// Up to 12 agent avatars, then "+N".
+/// As many agent avatars as fit (up to 12), then "+N".
 struct AvatarStack: View {
     var task: TaskModel
-    var limit = 12
 
     var body: some View {
         let runs = task.runs
+        ViewThatFits(in: .horizontal) {
+            ForEach([12, 9, 6, 4], id: \.self) { limit in
+                row(runs, limit: limit)
+            }
+        }
+        .animation(Theme.spring, value: task.runIDs)
+    }
+
+    private func row(_ runs: [RunModel], limit: Int) -> some View {
         HStack(spacing: -4) {
             ForEach(runs.prefix(limit)) { run in
                 AgentAvatar(run: run, size: 22, pulsing: false)
@@ -84,13 +96,13 @@ struct AvatarStack: View {
             }
             if runs.count > limit {
                 Text("+\(runs.count - limit)")
-                    .font(.caption2.weight(.semibold))
+                    .font(.caption2.weight(.semibold).monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .frame(width: 26, height: 22)
+                    .frame(width: 28, height: 22)
                     .background(.quaternary, in: .capsule)
                     .padding(.leading, 8)
             }
         }
-        .animation(Theme.spring, value: task.runIDs)
+        .fixedSize()
     }
 }
