@@ -8,7 +8,7 @@ struct CommandPaletteHost: View {
     var body: some View {
         ZStack(alignment: .top) {
             if nav.showPalette {
-                Color.black.opacity(0.12)
+                Color.black.opacity(0.18)
                     .ignoresSafeArea()
                     .onTapGesture { close() }
                     .transition(.opacity)
@@ -91,8 +91,11 @@ private struct CommandPalette: View {
             }
         }
         .frame(maxWidth: 560)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.2), radius: 24, y: 10)
+        // A thick material rather than clear glass: results must stay legible over busy cards.
+        .background(.thickMaterial, in: .rect(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+        .clipShape(.rect(cornerRadius: 16))
+        .shadow(color: .black.opacity(0.25), radius: 28, y: 12)
         .onAppear { fieldFocused = true; selection = 0 }
         .onChange(of: query) { selection = 0 }
     }

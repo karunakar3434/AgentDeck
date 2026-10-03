@@ -128,6 +128,15 @@ enum DebugAutomation {
             let mainH = NSScreen.screens.first?.frame.height ?? 0
             cg.location = CGPoint(x: screenPoint.x, y: mainH - screenPoint.y)
             if let e = NSEvent(cgEvent: cg) { w.sendEvent(e) }
+        case "menubar":
+            let b = statusItemButton()
+            try? "button=\(b.map { String(describing: type(of: $0)) } ?? "nil") action=\(b?.action.map(NSStringFromSelector) ?? "-") target=\(b?.target.map { String(describing: type(of: $0)) } ?? "-")".write(toFile: "/tmp/agentdeck-menubar.txt", atomically: true, encoding: .utf8)
+            clickStatusItem()
+        case "windows":
+            let lines = NSApp.windows.map { w in
+                "\(type(of: w)) visible=\(w.isVisible) level=\(w.level.rawValue) frame=\(w.frame) title=\(w.title) id=\(w.identifier?.rawValue ?? "-") content=\(w.contentView.map { String(describing: type(of: $0)) } ?? "-")"
+            }
+            try? lines.joined(separator: "\n").write(toFile: rest.first ?? "/tmp/agentdeck-windows.txt", atomically: true, encoding: .utf8)
         case "views":
             // Dump the AppKit view tree (class, frame, row counts) to check what cacheDisplay can't draw.
             var out: [String] = []
@@ -155,14 +164,17 @@ enum DebugAutomation {
     /// Renders a window (frame view included, so the toolbar shows) to a PNG.
     private static func snapshot(window kind: String, to path: String, app: AppModel) {
         if kind == "popover" {
-            let view = MenuBarPopover()
-                .environment(app).environment(app.store).environment(app.nav)
-                .background(.background)
-            let r = ImageRenderer(content: view)
-            r.scale = 2
-            if let img = r.nsImage, let tiff = img.tiffRepresentation,
-               let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-                try? png.write(to: URL(fileURLWithPath: path))
+            // Host the popover view in an ordinary window (MenuBarExtra can't be opened in-process).
+            let host = NSHostingView(rootView: MenuBarPopover()
+                .environment(app).environment(app.store).environment(app.nav))
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: 520),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+            w.contentView = host
+            w.setContentSize(host.fittingSize)
+            w.orderFront(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                write(capture(w), to: path)
+                w.orderOut(nil)
             }
             return
         }
@@ -173,17 +185,65 @@ enum DebugAutomation {
         } else {
             window = mainWindow()
         }
-        guard let root = window?.contentView?.superview ?? window?.contentView else { return }
+        guard let window else { return }
+        write(capture(window), to: path)
+    }
+
+    private static func statusItemButton() -> NSStatusBarButton? {
+        for w in NSApp.windows where String(describing: type(of: w)).contains("StatusBar") {
+            if let b = findView(in: w.contentView, as: NSStatusBarButton.self) { return b }
+        }
+        return nil
+    }
+
+    /// MenuBarExtra ignores performClick, so deliver a real mouse down/up to the button's window.
+    private static func clickStatusItem() {
+        guard let b = statusItemButton(), let w = b.window else { return }
+        let p = b.convert(NSPoint(x: b.bounds.midX, y: b.bounds.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                          windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                w.sendEvent(e)
+            }
+        }
+    }
+
+    private static func popoverWindow() -> NSWindow? {
+        NSApp.windows.first { w in
+            w.isVisible && !String(describing: type(of: w)).contains("StatusBar")
+                && (w is NSPanel || String(describing: type(of: w)).contains("MenuBarExtra"))
+        }
+    }
+
+    private static func findView<T: NSView>(in view: NSView?, as type: T.Type) -> T? {
+        guard let view else { return nil }
+        if let v = view as? T { return v }
+        for s in view.subviews { if let v = findView(in: s, as: type) { return v } }
+        return nil
+    }
+
+    private static func write(_ image: NSImage?, to path: String) {
+        guard let image, let tiff = image.tiffRepresentation,
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: path))
+    }
+
+    /// Renders a window, frame view included, compositing glass-hosted scroll views.
+    private static func capture(_ window: NSWindow) -> NSImage? {
+        guard let root = window.contentView?.superview ?? window.contentView else { return nil }
         let bounds = root.bounds
-        guard let base = root.bitmapImageRepForCachingDisplay(in: bounds) else { return }
+        guard let base = root.bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
         root.cacheDisplay(in: bounds, to: base)
 
-        // cacheDisplay of the whole window skips table views hosted inside NSGlassEffectView
-        // (the sidebar list), so draw those tables directly on top, on a material-like fill.
-        var tables: [NSTableView] = []
+        // cacheDisplay of the whole window skips scroll views hosted inside NSGlassEffectView
+        // (the sidebar list, the inspector), so draw their documents on top on a material-like fill.
+        var docs: [NSView] = []
         func collect(_ v: NSView, inGlass: Bool) {
             let glass = inGlass || String(describing: type(of: v)) == "NSGlassEffectView"
-            if glass, let t = v as? NSTableView, !t.isHiddenOrHasHiddenAncestor { tables.append(t) }
+            if glass, let sv = v as? NSScrollView, !sv.isHiddenOrHasHiddenAncestor, let doc = sv.documentView {
+                docs.append(doc)
+                return
+            }
             for s in v.subviews { collect(s, inGlass: glass) }
         }
         collect(root, inGlass: false)
@@ -192,16 +252,18 @@ enum DebugAutomation {
         image.lockFocusFlipped(root.isFlipped)
         base.draw(in: bounds)
         let dark = root.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-        for t in tables {
-            let visible = t.visibleRect
-            guard visible.width > 1, visible.height > 1 else { continue }
-            let area = (t.enclosingScrollView ?? t).convert((t.enclosingScrollView ?? t).bounds, to: root)
+        for doc in docs {
+            let visible = doc.visibleRect
+            guard visible.width > 1, visible.height > 1, let scroll = doc.enclosingScrollView else { continue }
+            let area = scroll.convert(scroll.bounds, to: root)
             (dark ? NSColor(white: 0.17, alpha: 1) : NSColor(white: 0.955, alpha: 1)).setFill()
             NSBezierPath(rect: area).fill()
-            for row in t.selectedRowIndexes where row < t.numberOfRows {
-                let r = t.convert(t.rect(ofRow: row).insetBy(dx: 10, dy: 0), to: root)
-                NSColor.controlAccentColor.withAlphaComponent(dark ? 0.45 : 0.22).setFill()
-                NSBezierPath(roundedRect: r, xRadius: 8, yRadius: 8).fill()
+            if let t = doc as? NSTableView {
+                for row in t.selectedRowIndexes where row < t.numberOfRows {
+                    let r = t.convert(t.rect(ofRow: row).insetBy(dx: 10, dy: 0), to: root)
+                    NSColor.controlAccentColor.withAlphaComponent(dark ? 0.45 : 0.22).setFill()
+                    NSBezierPath(roundedRect: r, xRadius: 8, yRadius: 8).fill()
+                }
             }
             // Selection materials render black through cacheDisplay; hide them for the capture.
             var hidden: [NSView] = []
@@ -209,17 +271,15 @@ enum DebugAutomation {
                 if v is NSVisualEffectView, !v.isHidden { v.isHidden = true; hidden.append(v) }
                 for s in v.subviews { hideEffects(s) }
             }
-            hideEffects(t)
-            if let rep = t.bitmapImageRepForCachingDisplay(in: visible) {
-                t.cacheDisplay(in: visible, to: rep)
-                rep.draw(in: t.convert(visible, to: root), from: .zero, operation: .sourceOver, fraction: 1,
+            hideEffects(doc)
+            if let rep = doc.bitmapImageRepForCachingDisplay(in: visible) {
+                doc.cacheDisplay(in: visible, to: rep)
+                rep.draw(in: doc.convert(visible, to: root), from: .zero, operation: .sourceOver, fraction: 1,
                          respectFlipped: true, hints: nil)
             }
             hidden.forEach { $0.isHidden = false }
         }
         image.unlockFocus()
-        if let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-            try? png.write(to: URL(fileURLWithPath: path))
-        }
+        return image
     }
 }

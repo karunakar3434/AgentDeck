@@ -34,7 +34,7 @@ final class DeckStore {
 
     func runs(of task: TaskModel) -> [RunModel] { task.runs }
 
-    func setError(_ message: String?) { loadError = message }
+    func setError(_ message: String?) { if loadError != message { loadError = message } }
 
     func reset() {
         tasks = [:]
@@ -52,6 +52,11 @@ final class DeckStore {
 
     func apply(_ update: DeckUpdate) {
         var structureChanged = false
+        switch update.health {
+        case .ok?: setError(nil)
+        case .degraded(let message)?: setError(message)
+        case nil: break
+        }
 
         for id in update.removed {
             if let t = tasks.removeValue(forKey: id) {

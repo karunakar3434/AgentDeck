@@ -138,7 +138,12 @@ struct AgentAvatar: View {
             .font(.system(size: size * 0.48, weight: .semibold))
             .foregroundStyle(tint)
             .frame(width: size, height: size)
-            .background(tint.opacity(0.15), in: .circle)
+            .background {
+                // Opaque so overlapping avatars in a stack stay crisp.
+                Circle().fill(.background)
+                    .overlay(Circle().fill(tint.opacity(0.16)))
+                    .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
+            }
             .overlay(alignment: .bottomTrailing) {
                 StatusDot(color: run.status.color, pulsing: pulsing && run.status == .running, size: size * 0.34)
                     .overlay(Circle().stroke(.background, lineWidth: 1.5))

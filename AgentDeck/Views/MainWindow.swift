@@ -15,9 +15,19 @@ struct MainWindow: View {
             Sidebar()
         } detail: {
             DetailContainer()
-                .inspector(isPresented: $nav.showInspector) {
+                // Wide windows: a trailing inspector column. Narrow windows (beside an editor):
+                // the inspector slides over the detail instead of squeezing it.
+                .inspector(isPresented: Binding(get: { nav.showInspector && !isNarrow },
+                                                set: { nav.showInspector = $0 })) {
                     InspectorView()
                 }
+                .overlay(alignment: .trailing) {
+                    if isNarrow && nav.showInspector {
+                        NarrowInspector()
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
+                .animation(Theme.spring, value: nav.showInspector)
         }
         .searchable(text: $nav.searchText, isPresented: $nav.isSearchFocused, placement: .toolbar, prompt: "Search tasks and agents")
         .toolbar { MainToolbar() }
@@ -131,5 +141,29 @@ private struct ProjectView: View {
                 HistoryView(taskIDs: done, namespace: namespace)
             }
         }
+    }
+}
+
+/// The inspector as a sliding panel, used when the window is too narrow for a column.
+private struct NarrowInspector: View {
+    @Environment(Navigator.self) private var nav
+
+    var body: some View {
+        InspectorView()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.background)
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    withAnimation(Theme.spring) { nav.showInspector = false }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .padding(10)
+                .help("Close the inspector (Esc)")
+            }
     }
 }

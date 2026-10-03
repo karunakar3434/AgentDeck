@@ -64,12 +64,14 @@ private struct LongestTile: View {
     @Environment(Navigator.self) private var nav
 
     var body: some View {
-        let run = store.runningRunIDs.first.flatMap { store.runs[$0] }
+        // Prefer the longest-running subagent; the main agents are almost always older.
+        let ids = store.runningRunIDs
+        let run = (ids.lazy.compactMap { store.runs[$0] }.first { !$0.isMain }) ?? ids.first.flatMap { store.runs[$0] }
         StatTile(title: "Longest running", symbol: "hourglass", tint: .orange) {
             if let run {
                 HStack(spacing: 6) {
                     ElapsedText(run: run)
-                    Text(run.displayName)
+                    Text(run.isMain ? (store.tasks[run.taskID]?.title ?? "Main agent") : run.agentType)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

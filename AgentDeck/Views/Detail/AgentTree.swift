@@ -88,7 +88,9 @@ struct AgentRow: View {
             VStack(alignment: .trailing, spacing: 2) {
                 HStack(spacing: 6) {
                     ElapsedText(run: run, font: Theme.smallTimerFont)
-                    RunProgressRing(run: run, size: 16, lineWidth: 2.5)
+                    if !run.isMain {
+                        RunProgressRing(run: run, size: 16, lineWidth: 2.5)
+                    }
                 }
                 if !run.isMain {
                     EstimateText(run: run)

@@ -96,7 +96,7 @@ private struct RunInspector: View {
                 if let est = run.estimate, !run.isMain {
                     GridRow {
                         Text("Estimate").foregroundStyle(.secondary)
-                        Text("\(est.isApproximate ? "~" : "")\(DurationText.short(est.seconds)) · \(est.confidence.rawValue) confidence (\(est.sampleCount) runs)")
+                        Text("\(est.isApproximate ? "~" : "")\(DurationText.short(est.seconds)) · \(est.confidence.rawValue) confidence (\(est.sampleCount) run\(est.sampleCount == 1 ? "" : "s"))")
                     }
                 }
                 GridRow {
@@ -115,7 +115,7 @@ private struct RunInspector: View {
             .font(.caption.monospacedDigit())
         }
         .padding(12)
-        .background(.background.secondary, in: .rect(cornerRadius: 12))
+        .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 12))
     }
 
     private var promptSection: some View {
@@ -202,7 +202,7 @@ private struct ToolRow: View {
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
-        .background(.background.secondary, in: .rect(cornerRadius: 6))
+        .background(Color.primary.opacity(0.045), in: .rect(cornerRadius: 6))
     }
 
     private var icon: String {

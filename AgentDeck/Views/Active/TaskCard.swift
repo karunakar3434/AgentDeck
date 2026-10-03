@@ -77,7 +77,7 @@ struct AvatarStack: View {
 
     var body: some View {
         let runs = task.runs
-        HStack(spacing: -5) {
+        HStack(spacing: -4) {
             ForEach(runs.prefix(limit)) { run in
                 AgentAvatar(run: run, size: 22, pulsing: false)
                     .transition(.scale.combined(with: .opacity))
