@@ -293,8 +293,9 @@ Resolution order (first hit wins):
    foreground completions, so it is known within a second of launch, before the subagent's first
    assistant line.
 3. **The Agent call's `model` parameter** (`"sonnet"`, …), or `meta.json.model` when not `"inherit"`.
-4. **The agent definition's frontmatter** `model:` (`~/.claude/agents/<type>.md`, then
-   `<project>/.claude/agents/<type>.md`) when not `inherit`.
+4. **The agent definition's frontmatter** `model:` when not `inherit`. Project definitions
+   (`<project>/.claude/agents/<type>.md`) take precedence over user ones (`~/.claude/agents/<type>.md`),
+   matching the Claude Code docs.
 5. Otherwise **"inherits parent"**: the main agent's current model.
 
 The docs give the runtime order as call parameter > frontmatter > `CLAUDE_CODE_SUBAGENT_MODEL`

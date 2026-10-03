@@ -21,6 +21,7 @@ final class AppModel {
         #if DEBUG
         DebugAutomation.install(app: self)
         #endif
+        ReduceMotion.startObserving()
         notifications.activate()
         notifications.onOpenTask = { [weak self] id in self?.openFromNotification(id) }
         store.onEvent = { [weak self] event in

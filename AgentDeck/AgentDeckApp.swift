@@ -17,6 +17,7 @@ struct AgentDeckApp: App {
                 .environment(app.store)
                 .environment(app.nav)
                 .task { app.start() }
+                .onAppear { DispatchQueue.main.async { LaunchMetrics.windowAppeared() } }
         }
         .defaultSize(width: 980, height: 680)
         .windowToolbarStyle(.unified)

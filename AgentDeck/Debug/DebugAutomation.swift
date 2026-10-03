@@ -111,6 +111,15 @@ enum DebugAutomation {
                 v.cacheDisplay(in: v.bounds, to: rep)
                 try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: rest.last ?? "/tmp/v.png"))
             }
+        case "scroll":
+            // scroll <dy> [x y]: synthesize a scroll-wheel event in the main window (in-process, no permissions).
+            guard let w = mainWindow(), let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                                                       wheel1: Int32(rest.first.flatMap(Int.init) ?? -200), wheel2: 0, wheel3: 0) else { break }
+            let x = rest.count > 2 ? Double(rest[1]) ?? 600 : 600, y = rest.count > 2 ? Double(rest[2]) ?? 300 : 300
+            let screenPoint = w.convertPoint(toScreen: NSPoint(x: x, y: w.frame.height - y))
+            let mainH = NSScreen.screens.first?.frame.height ?? 0
+            cg.location = CGPoint(x: screenPoint.x, y: mainH - screenPoint.y)
+            if let e = NSEvent(cgEvent: cg) { w.sendEvent(e) }
         case "views":
             // Dump the AppKit view tree (class, frame, row counts) to check what cacheDisplay can't draw.
             var out: [String] = []

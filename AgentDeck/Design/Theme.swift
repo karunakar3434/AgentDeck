@@ -5,9 +5,9 @@ import AgentDeckCore
 enum Theme {
     // MARK: Motion
 
-    /// The app's standard spring (~0.25s).
-    static let spring = Animation.spring(duration: 0.25, bounce: 0.12)
-    static let snappy = Animation.snappy(duration: 0.2)
+    /// The app's standard spring (~0.25s), or a short cross-fade with Reduce Motion on.
+    static var spring: Animation { ReduceMotion.isOn ? .easeInOut(duration: 0.12) : .spring(duration: 0.25, bounce: 0.12) }
+    static var snappy: Animation { ReduceMotion.isOn ? .easeInOut(duration: 0.1) : .snappy(duration: 0.2) }
 
     // MARK: Type
 
@@ -66,9 +66,20 @@ extension ModelFamily {
         switch self {
         case .fable: .pink
         case .opus: .purple
-        case .sonnet: .orange
+        case .sonnet: .indigo
         case .haiku: .teal
         case .other: .gray
         }
     }
+}
+
+/// Cached system Reduce Motion flag, kept current via NSWorkspace notifications.
+@MainActor
+enum ReduceMotion {
+    private(set) static var isOn = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    private static let observer: NSObjectProtocol = NSWorkspace.shared.notificationCenter.addObserver(
+        forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+    ) { _ in MainActor.assumeIsolated { isOn = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion } }
+
+    static func startObserving() { _ = observer }
 }
