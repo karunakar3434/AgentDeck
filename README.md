@@ -44,6 +44,7 @@ make install    # Release build, copied to /Applications/AgentDeck.app and opene
 | `make build` | Debug build into `build/Build/Products/Debug/` |
 | `make run` | Debug build, quit any running AgentDeck, open the Debug app |
 | `make mock` | Same, launched with `-mock` (simulated agents, see below) |
+| `make stress` | Same, launched with `-mock -stress` (20 tasks × 15 agents) |
 | `make release` | Release build into `build/Build/Products/Release/` |
 | `make install` | Release build, quit any running AgentDeck, replace `/Applications/AgentDeck.app` with it (`ditto`), open it |
 | `make uninstall` | Quit AgentDeck and delete `/Applications/AgentDeck.app` |
@@ -52,7 +53,7 @@ make install    # Release build, copied to /Applications/AgentDeck.app and opene
 | `make debugctl` | Compile the debug remote control to `build/debugctl` (see [Debug remote control](#debug-remote-control)) |
 | `make kill` | Quit any running AgentDeck |
 
-`run`, `mock` and `install` all run `pkill -x AgentDeck` first — that quits **every** copy, the installed one included, so the menu bar item disappearing for a moment is expected.
+`run`, `mock`, `stress` and `install` all run `pkill -x AgentDeck` first — that quits **every** copy, the installed one included, so the menu bar item disappearing for a moment is expected.
 
 Use the Release build (`make install`) day to day. Debug builds accept [debug remote control](#debug-remote-control) commands from any local process; Release builds ignore them unless launched with `-automation`.
 
@@ -60,14 +61,18 @@ Use the Release build (`make install`) day to day. Debug builds accept [debug re
 
 `-mock` swaps the Claude Code source for a simulator: a handful of realistic sessions with compressed durations (a task takes 1–4 minutes), new tasks arriving, failures, cancellations, nested subagents and overruns. It reads nothing from disk and never opens the history database. The window subtitle reads "Simulated agents" while it's on.
 
-`-stress` keeps 20 tasks with about 15 agents each running. It only takes effect together with `-mock` — on its own it's ignored and you get the live source:
+`-stress` keeps 20 tasks with about 15 agents each running. It only takes effect together with `-mock` — on its own it's ignored and you get the live source. `make stress` launches the Debug build that way:
 
 ```sh
-make build
-open -n build/Build/Products/Debug/AgentDeck.app --args -mock -stress
+make stress
 ```
 
-Measure performance on the Release app (`make release`, then the same `open` with `Release` in the path) — Debug numbers aren't representative.
+Measure performance on the Release app instead — Debug numbers aren't representative:
+
+```sh
+make release
+open -n build/Build/Products/Release/AgentDeck.app --args -mock -stress
+```
 
 You can also switch at runtime from the **Debug** menu, which is in every build, Release included: **Simulate Agents** (⌥⌘M) toggles the simulator, **Stress Test (20 tasks × 15 agents)** starts the stress scenario.
 
@@ -95,7 +100,7 @@ Turn it on in **Settings › General › Launch at login**. AgentDeck first asks
 | `ProgramArguments` | `/usr/bin/open -g -b com.karun.AgentDeck` (`-g` opens it in the background) |
 | `RunAtLoad` / `ProcessType` | `true` / `Interactive` |
 
-Turning the toggle off unregisters the `SMAppService` item and deletes that plist. The toggle shows on if either one is in place. launchd reads `~/Library/LaunchAgents` at login, so nothing visible happens until you next log in.
+Turning the toggle off deletes that plist first, then unregisters the `SMAppService` item, so a failed unregister can't leave the LaunchAgent behind. The toggle shows on if either one is in place. launchd reads `~/Library/LaunchAgents` at login, so nothing visible happens until you next log in.
 
 The LaunchAgent opens AgentDeck by bundle id, not by path, so it launches whichever copy macOS has registered — `/Applications/AgentDeck.app` after `make install`. The Debug and Release builds in `build/` share that bundle id, so with no copy in `/Applications`, login opens one of those instead, and nothing at all once `make clean` has removed them.
 
@@ -220,7 +225,7 @@ Steps 1 and 2 report what actually ran, so they override what the call or the de
 1. **FSEvents** watches `projects/`, `sessions/`, `agents/` and `agentdeck/` with a 0.1 s latency. A fallback stat sweep runs every 10 s while any task is active (every 60 s otherwise) in case events are dropped, and process exits come from dispatch sources rather than polling.
 2. One actor, `TranscriptEngine`, owns all session state. For each changed file it reads **only the new bytes**, starting at the byte offset it stopped at last time, classifies each line by type before decoding it (attachments and metadata, about 40 % of lines, are dropped without JSON decoding), and folds the events into the session.
 3. Changed tasks are marked dirty, and an `UpdateCoalescer` sends at most one batch per 16 ms frame, holding only tasks whose snapshot actually changed. Nothing is sent while nothing changes. If the UI hasn't taken the previous batch yet, the next one waits and merges — the dirty set, not the batch, is the source of truth, so nothing is lost and nothing piles up.
-4. On the main actor, `DeckStore` applies each batch to long-lived, small `@Observable` task and agent models, so a view redraws only when something it reads changed.
+4. On the main actor, `DeckStore` (in `AgentDeckState`) applies each batch to long-lived, small `@Observable` task and agent models, so a view redraws only when something it reads changed. Agent models are keyed by task as well as run (`RunKey.make(task:run:)`): the core's run ids are Agent `tool_use` ids, unique only within a session, and a forked or resumed session can repeat them.
 5. Time is local: one `TimelineView` clock per window ticks once a second while anything runs, and only the small views that display time read it.
 
 Cold launch is tiered so the window is useful at once: sessions with a live process and recently active ones first, newest first, then the rest of the history window — unchanged finished tasks come straight from the database without parsing — then the background estimate scan.
@@ -278,7 +283,7 @@ A task's ETA is the latest expected end among its **running** subagents, where e
 
 ## Optional hooks for lower latency
 
-You don't need this. The transcripts already get changes to AgentDeck within about a second — FSEvents fires 0.1 s after a write, and the `.meta.json` sidecar Claude Code writes when a subagent starts makes new agents appear well inside that. A hook adds a second, independent nudge: each event tells AgentDeck which transcript to re-read right now. Expect no visible difference on a healthy machine. It's a backstop for when FSEvents drops or coalesces events and the fallback sweep (every 10 s while tasks are active) would otherwise be the next chance.
+You don't need this. The transcripts already get changes to AgentDeck within about a second — FSEvents fires 0.1 s after a write, and the `.meta.json` sidecar Claude Code writes when a subagent starts gets new agents on screen about a second after their Agent call (see [Measured](#measured)). A hook adds a second, independent nudge: each event tells AgentDeck which transcript to re-read right now. Expect no visible difference on a healthy machine. It's a backstop for when FSEvents drops or coalesces events and the fallback sweep (every 10 s while tasks are active) would otherwise be the next chance.
 
 AgentDeck never edits `~/.claude/settings.json`. You add the hook yourself, and you remove it the same way.
 
@@ -387,27 +392,36 @@ Release build on a MacBook Air M2, macOS 27:
 | First window | ~0.5 s (≈1–1.6 s on the first launch after a build or copy) |
 | First live task | ~0.13–0.36 s after start |
 | Full initial load | ~0.4–0.8 s |
-| New subagent appears | within ~1 s of its Agent call |
+| New subagent appears | ~1 s after its Agent call: 0.8 s and 1.5 s from the call's transcript timestamp. The two Explore subagents of a second, concurrent `claude -p` session showed up while their elapsed time still read 0 s |
 
-Stress mock (20 tasks × 15 agents), frame intervals judged against a 60 Hz budget (16.7 ms):
+Stress mock (20 tasks × 15 agents), same build and Mac. Steady CPU while the stress world churns:
+
+| Screen | CPU |
+|---|---|
+| Active (card grid) | ≈ 39 % |
+| Task detail | ≈ 15 % |
+| History | ≈ 11 % |
+
+Frame intervals, judged against a 60 Hz budget (16.7 ms):
 
 | Phase | p99 frame interval |
 |---|---|
-| Card list, idle and scrolling | ≈ 22 ms, no frame gap over 50 ms |
-| Task detail, scrolling | ≈ 18 ms |
-| Switching agents in the inspector | ≈ 31 ms |
+| Card list, idle and scrolling | ≈ 27–29 ms, no frame gap over 50 ms |
+| Task detail, scrolling | ≈ 17 ms (max 24 ms) |
+| Switching agents in the inspector | ≈ 30 ms, no frame gap over 50 ms |
 
-Screen transitions are the known gap. Opening or closing a task, switching between Active and History, and showing the palette still produce a single long frame — about 80–130 ms in stress, 35–90 ms in the normal demo.
+Screen transitions are the known gap. Opening a task, going back to the list and showing the palette each still produce a single long frame, about 70–150 ms in stress.
 
 **How frame pacing was measured.** Instruments' Animation Hitches template came back with empty frame and hitch tables on this machine — the `hitches` table exports with its schema and no rows — so the frame numbers come from the in-app frame meter, `AgentDeck/Debug/FrameMeter.swift`. It's a display link on the main window that records every frame interval and reports gaps over 25, 50 and 100 ms, p50, p99 and the maximum. Instruments' hang detection (the `potential-hangs` table from the same trace) and Time Profiler were used to find out *why* frames were slow.
 
 ### What keeps it fast
 
-- **Flattened live content.** Task cards, agent rows, history rows, popover rows, header tiles and the timeline chart are wrapped in `.drawingGroup()`, so a change redraws one GPU-backed layer — on macOS, SwiftUI otherwise redraws the whole card on the CPU whenever anything in it changes. On task cards the once-a-second timers (elapsed time, ETA) sit in overlays outside the flattened layer, so a clock tick redraws only them.
-- **Pulses in Core Animation.** A running status dot doesn't animate itself. It publishes its bounds through an anchor preference, and the nearest `.pulseHost()` draws a ring with a repeating `CABasicAnimation`. That runs in the render server with no per-frame work on the main thread, and it lets the content around the dot be flattened. Reduce Motion turns the pulses off.
+- **Flattened live content.** Task cards, agent rows, history rows, popover rows, header tiles and the timeline chart are wrapped in `.drawingGroup()`, so a change redraws one GPU-backed layer — on macOS, SwiftUI otherwise redraws the whole card on the CPU whenever anything in it changes.
+- **Live parts outside the flattened layer.** On a task card, the elapsed time, the ETA and the avatar strip are overlays on top of the flattened card, and the strip is flattened into its own small layer. A clock tick or a new agent redraws only those, not the card. On an agent row, the timing column (elapsed time, progress ring, estimate) is likewise an overlay outside the row's layer.
+- **Pulses in Core Animation.** A running status dot doesn't animate itself. It publishes its bounds through an anchor preference, and the nearest `.pulseHost()` draws a ring with a repeating `CABasicAnimation`. That runs in the render server with no per-frame work on the main thread, and it lets the content around the dot be flattened. Each container — a task card, the agent tree, the inspector header, the menu bar popover — has its own host, which consumes its dots' rings so they never reach an outer host. Hosts sit inside scroll views, so scrolling moves the rings with their layer instead of repositioning each one. Reduce Motion turns the pulses off.
 - **Throttled glance counts.** The menu bar count, Dock badge and window subtitle change at most twice a second — AppKit re-lays out the status item and title bar on every change, which gets expensive when hundreds of agents churn.
-- **One clock.** A single `TimelineView` per window drives `Clock.shared` in whole seconds — every second while anything runs, every 30 s otherwise (for "4m ago" labels) — and only the leaf views that display time read it.
-- **Deferred and lazy work.** The timeline chart is built a frame after a task opens so the click responds at once, the agent tree and history use lazy stacks, and the core sends nothing while idle.
+- **One clock.** A single `TimelineView` per window drives `Clock.shared` in whole seconds — every second while anything runs, every 30 s otherwise (for "4m ago" labels) — and only the leaf views that display time read it. The timeline chart reads `Clock.shared.coarseNow` instead, which moves in 5 s steps: a minutes-wide chart doesn't need per-second precision, and Swift Charts rebuilds are costly.
+- **Deferred and lazy work.** The timeline chart is built 300 ms after a task opens, once the open animation has finished, so building it doesn't drop that animation's frames. The agent tree and history use lazy stacks. The ⌘K palette takes a snapshot of its tasks and agents once each time it opens and ranks that snapshot as you type, so the list doesn't change under you while it's open. The core sends nothing while idle.
 
 ### Reproducing the numbers
 
@@ -423,7 +437,7 @@ make release debugctl
 | `scripts/frames-transitions.sh` | Frame pacing per screen transition, two rounds |
 | `SCENARIO=-demo scripts/frames-transitions.sh` | The same in the normal demo. Any value other than `-stress` works — the app ignores arguments it doesn't know |
 | `scripts/cpu-baseline.sh list` | CPU over 6 s in stress mock. The other states are `detail`, `history` and `hidden` (`hidden` uses AppleScript, so macOS asks once for Automation permission) |
-| `scripts/profile.sh "Animation Hitches" 40` | A 40 s Instruments recording while a script scrolls, opens tasks, switches agents and toggles the inspector. Builds first and writes `profiles/<template>-<HHMMSS>.trace`. Templates: `"Animation Hitches"` (default), `"SwiftUI"`, `"Time Profiler"` |
+| `scripts/profile.sh "Animation Hitches" 40` | A 40 s Instruments recording while a script scrolls, opens tasks, switches agents and toggles the inspector. Builds first, writes `profiles/<template>-<HHMMSS>.trace`, then deletes xctrace's kernel traces from `$TMPDIR` (see below). Templates: `"Animation Hitches"` (default), `"SwiftUI"`, `"Time Profiler"` |
 
 Frame lines read `gaps>25ms=… gaps>50ms=… gaps>100ms=… p50=… p99=… max=…`, in milliseconds. The scripts also take experiment flags (`frames.sh` and `cpu-baseline.sh` as their second argument, `frames-transitions.sh` as its first) that switch parts of the UI off to show what they cost: `nopulse`, `notree`, `noinspector`, `nosidebar`, `nosubtitle`, `nomenubar`, `nodock`.
 
@@ -439,7 +453,15 @@ python3 scripts/tp-summary.py /tmp/tp.xml AgentDeck 25
 
 `tp-summary.py` prints CPU time per thread, the hottest leaf functions, the hottest inclusive functions and AgentDeck's own frames. An optional fourth argument restricts it to time windows in seconds, for example `"21.6-24.4,31.0-34.7"`. For a SwiftUI trace, export `table[@schema="swiftui-updates"]` instead and run `python3 scripts/swiftui-summary.py /tmp/swiftui.xml 30` for update counts and time per view. For hangs, export `table[@schema="potential-hangs"]` from an Animation Hitches trace.
 
-Exports get big — a 40 s SwiftUI trace came to about 1 GB of XML here — and `profiles/` is gitignored but never cleaned up, so delete old traces and exports before the disk fills mid-recording.
+**Instruments runs can fill the disk.** Each Animation Hitches recording leaves about 10 GB of kernel traces, `instruments*.ktrace`, in `$TMPDIR`, and xctrace doesn't remove them. `scripts/profile.sh` deletes them at the end of each run, but only if no other `xctrace` is still recording, and not at all if the script stopped early. After recording any other way (Instruments.app, your own `xctrace record`) or an interrupted script, check and clean up yourself once nothing is recording:
+
+```sh
+pgrep -lx xctrace; pgrep -lx Instruments      # both must print nothing
+find "$TMPDIR" -maxdepth 1 -name 'instruments*.ktrace' -exec du -ch {} +
+find "$TMPDIR" -maxdepth 1 -name 'instruments*.ktrace' -delete
+```
+
+Exports get big too — a 40 s SwiftUI trace came to about 1 GB of XML here — and `profiles/` is gitignored but never cleaned up, so delete old traces and exports before the disk fills mid-recording.
 
 Other numbers:
 
@@ -510,13 +532,13 @@ AgentDeckCore/               Swift package with everything that isn't a view
     Source/                  AgentSource protocol, UpdateCoalescer
     Support/                 Clocks, process probe, timestamps, file ids
   Tests/AgentDeckCoreTests/  Swift Testing suites and Fixtures/
-  Tests/AgentDeckStateTests/ Tests for AgentDeckState
+  Tests/AgentDeckStateTests/ DeckStoreTests (Swift Testing)
 docs/                        data-sources.md, architecture.md
 scripts/                     debugctl, profiling, fixtures, app icon
 Makefile
 ```
 
-`AgentDeck.xcodeproj` uses a folder-synchronized group for `AgentDeck/`, so a new Swift file anywhere under `AgentDeck/` is compiled without touching `project.pbxproj`. `AgentDeckCore` is a local package and SwiftPM picks up new files the same way. `scripts/make-icon.swift` regenerates the app icon into `AgentDeck/Assets.xcassets/AppIcon.appiconset` (`swift scripts/make-icon.swift` from the repo root).
+`AgentDeck.xcodeproj` uses a folder-synchronized group for `AgentDeck/`, so a new Swift file anywhere under `AgentDeck/` is compiled without touching `project.pbxproj`. `AgentDeckCore` is a local package whose two library products, `AgentDeckCore` and `AgentDeckState`, the app links, and SwiftPM picks up new files the same way. `scripts/make-icon.swift` regenerates the app icon into `AgentDeck/Assets.xcassets/AppIcon.appiconset` (`swift scripts/make-icon.swift` from the repo root).
 
 ## Testing
 
@@ -524,7 +546,12 @@ Makefile
 make test
 ```
 
-That runs `swift test` in `AgentDeckCore/`. The tests use Swift Testing. `AgentDeckCoreTests` has 216 tests in 17 suites, covering the line scanner and parser, the session reducer, status rules, model names, the estimator, the history store, the update coalescer, FSEvents, the engine (incremental reads, truncation and replacement resets, moved sessions, pid and window timing, hook lines, estimate bookkeeping) and the mock. `AgentDeckStateTests` covers the `AgentDeckState` library. The app target has no tests of its own — the logic worth testing lives in the package.
+That runs `swift test` in `AgentDeckCore/`: 228 tests, all written with Swift Testing, in two targets.
+
+- **`AgentDeckCoreTests`** (216 tests in 17 suites) covers the line scanner and parser, the session reducer, status rules, model names, the estimator, the history store, the update coalescer, FSEvents, the engine (incremental reads, truncation and replacement resets, moved sessions, pid and window timing, hook lines, estimate bookkeeping) and the mock.
+- **`AgentDeckStateTests`** (12 tests, `DeckStoreTests.swift`) covers `DeckStore` and the live models: indexes, model identity across updates, the same run id in two sessions staying two models, dropped runs and tasks, models in use, reset, the throttled glance count, finish and subagent-failure notifications, idle elapsed time and task ETA.
+
+The app target has no tests of its own — the logic worth testing lives in the package.
 
 The fixtures under `AgentDeckCore/Tests/AgentDeckCoreTests/Fixtures/` are sanitized real transcripts. To add one, pass session ids to the fixture script:
 
@@ -555,7 +582,7 @@ It copies those sessions from `~/.claude/projects` into `Fixtures/projects/`, ke
 
 ### Launch at login doesn't work
 
-- An error under the toggle ("Couldn't update the login item: …") means the change failed: turning it on, neither `SMAppService` nor writing the LaunchAgent worked; turning it off, unregistering or deleting the plist did.
+- An error under the toggle ("Couldn't update the login item: …") means the change failed: turning it on, neither `SMAppService` nor writing the LaunchAgent worked; turning it off, deleting the plist or unregistering failed (if only unregistering failed, the LaunchAgent is already gone).
 - Check whether the LaunchAgent is there and what it runs:
 
   ```sh

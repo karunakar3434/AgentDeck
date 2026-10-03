@@ -18,29 +18,34 @@ mkdir -p profiles
 pkill -x AgentDeck 2>/dev/null || true
 sleep 0.5
 
+LOG="profiles/driver-$(date +%H%M%S).log"
+mark() { perl -MTime::HiRes=time -e 'printf "%.3f %s\n", time, $ARGV[0]' "$1" >> "$LOG"; }
+
 drive() {
   sleep 4                                   # let the stress world spin up
   for round in 1 2 3; do
+    mark "round$round scroll-list"
     for i in 1 2 3 4 5 6; do $CTL scroll -240 600 400; sleep 0.25; done   # scroll the card list
     for i in 1 2 3 4 5 6; do $CTL scroll 240 600 400; sleep 0.25; done
-    $CTL open $((round - 1)); sleep 1
-    $CTL inspector on; sleep 0.6
-    for r in 1 2 3 4 5 6 7 8; do $CTL inspect $r; sleep 0.35; done      # switch agents
+    mark "open-task"; $CTL open $((round - 1)); sleep 1
+    mark "inspector-on"; $CTL inspector on; sleep 0.6
+    mark "switch-agents"; for r in 1 2 3 4 5 6 7 8; do $CTL inspect $r; sleep 0.35; done      # switch agents
     $CTL inspector off; sleep 0.5
-    $CTL close; sleep 0.8
-    $CTL section history; sleep 0.8
+    mark "close-task"; $CTL close; sleep 0.8
+    mark "to-history"; $CTL section history; sleep 0.8
     for i in 1 2 3 4; do $CTL scroll -240 600 400; sleep 0.25; done
-    $CTL section active; sleep 0.8
-    $CTL palette on; sleep 0.6; $CTL palette off; sleep 0.5
+    mark "to-active"; $CTL section active; sleep 0.8
+    mark "palette"; $CTL palette on; sleep 0.6; $CTL palette off; sleep 0.5
   done
 }
 
 drive &
 DRIVER=$!
+mark "recording-start"
 xcrun xctrace record --template "$TEMPLATE" --time-limit "${SECONDS_LIMIT}s" --output "$OUT" \
   --launch -- "$APP/Contents/MacOS/AgentDeck" -mock -stress -automation 2>&1 | tail -3
 kill $DRIVER 2>/dev/null || true
 pkill -x AgentDeck 2>/dev/null || true
 # xctrace leaves multi-GB kernel traces in the temp folder; remove them once nothing is recording.
-pgrep -x xctrace >/dev/null || rm -f "${TMPDIR:-/tmp/}"instruments*.ktrace
-echo "$OUT"
+pgrep -x xctrace >/dev/null || find "${TMPDIR:-/tmp/}" -maxdepth 1 -name 'instruments*.ktrace' -delete
+echo "$OUT $LOG"
