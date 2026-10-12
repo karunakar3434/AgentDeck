@@ -608,7 +608,7 @@ first sight. It is checked at start, by FSEvents on `agentdeck/`, and by the swe
 ## 16. Risks and edge cases
 
 1. **Agent-definition precedence.** Decided: project agents override user agents, as the Claude Code docs
-   specify (data-sources §4 updated). No project has `.claude/agents` today.
+   specify (data-sources §4 updated). Several projects have their own `.claude/agents` now, this repo included.
 2. **Format drift.** Unknown types are skipped. The only key-order assumption is "a decisive key within
    4 KB", and the fallback is a full decode. The `version` field is logged on the first decode failure per file.
 3. **Repeated notifications.** A notice can arrive 3 times, and again after a `SendMessage` resume. Applying

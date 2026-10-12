@@ -303,9 +303,8 @@ The docs give the runtime order as call parameter > frontmatter > `CLAUDE_CODE_S
 documented; the transcripts show `claude-code-guide` resolving to `claude-haiku-4-5-20251001` and
 Explore to the parent model.
 
-Agent definitions on this Mac (`~/.claude/agents/`): 10 use `inherit`, 4 `sonnet`
-(localbiz-curator, -researcher, -scout, -web-auditor), 3 `opus` (localbiz-qa, -site-builder,
--site-designer). No project has `.claude/agents/`.
+Agent definitions on this Mac (2026-10-11): 17 in `~/.claude/agents/` (11 `sonnet`, 6 `opus`). Four
+projects also have their own `.claude/agents/`, this repo among them (the agents used to develop AgentDeck).
 
 ## 5. Is a session running, waiting on me, idle or done
 

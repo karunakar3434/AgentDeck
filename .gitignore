@@ -7,3 +7,5 @@ AgentDeckCore/.swiftpm/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 *.trace
 /profiles/
+/.claude/skills/my-writing-style/
+/.claude/settings.local.json
