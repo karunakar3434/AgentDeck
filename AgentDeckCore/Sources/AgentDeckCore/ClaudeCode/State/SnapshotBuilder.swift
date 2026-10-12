@@ -19,17 +19,19 @@ enum SnapshotBuilder {
     ///   - finishedEstimate: the estimate for a finished run that wasn't watched finishing (no frozen
     ///     estimate), computed without the run's own sample: run id (= tool-use id), type, family.
     ///   - classifier: decides the sidebar entry (`projectName`, `projectKind`).
+    /// - Returns: nil while no line has carried a time (a main transcript of metadata lines only): there is
+    ///   no start to show, and the session isn't a task yet.
     static func build(_ s: SessionState, status: StatusRules.Result,
                       definitionModel: (String) -> String?,
                       estimate: (String, ModelFamily) -> DurationEstimate?,
                       finishedEstimate: (String, String, ModelFamily) -> DurationEstimate?,
-                      classifier: WorkflowClassifier) -> Output {
+                      classifier: WorkflowClassifier) -> Output? {
+        guard let startedAt = s.startedAt else { return nil }
         var usedDefinitions = false
         let mainResolution = ModelResolver.resolve(s.main, isMain: true, definitionModel: definitionModel)
         let mainModel = mainResolution.model
         let title = taskTitle(s)
         let projectPath = s.projectPath ?? ""
-        let startedAt = s.startedAt ?? s.lastActivityAt ?? Date(timeIntervalSince1970: 0)
         let lastActivity = s.lastActivityAt ?? startedAt
 
         var runs: [AgentRunSnapshot] = []

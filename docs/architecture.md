@@ -145,6 +145,10 @@ struct CoreEnvironment: Sendable {
 - **Emission scope:** a task is emitted while its pid is live, or it is active or idle, or
   `(endedAt ?? lastActivityAt) >= now − historyWindow`. This includes DB-only tasks whose transcript is gone.
   When a task leaves the window it is sent in `removed`.
+- **No start, no task:** a session no line has dated yet (a main transcript of metadata lines only,
+  data-sources §1) has no `startedAt`. `SnapshotBuilder.build` returns nil for it, so it is neither emitted
+  nor saved, and a history row with the same id stays as it was. Its state is kept for the lines still to
+  come. Older builds gave it a 1970-01-01 start, which History showed as decades of runtime.
 
 ## 4. File watching and incremental reads
 
@@ -182,7 +186,13 @@ struct CoreEnvironment: Sendable {
 - If the old path is gone and `fileID` matches, rebind (keep offset). Rebind its subagent and meta files by
   agentId under the new `<sid>/`.
 - If `fileID` differs (a copy), reset the session from the new path.
-- If both paths exist, the newest mtime wins.
+- If both paths exist, the copy holding a conversation wins over one holding only metadata lines, else the
+  newest mtime wins (`prefers`). "Holding a conversation" means a line in the first 64 KB that would give
+  the session a `startedAt`; a larger file counts without being read. Newest-mtime-wins alone lost the
+  conversation to the ~1 KB copy a moved worktree session's old CLI writes at the old path (data-sources §1):
+  the session was re-read from that copy alone, and the real transcript, now superseded, was ignored as it
+  grew. The same rule picks between duplicates at cold load (`listMainCandidates`) and when the winner is
+  deleted (`adoptDuplicate`, which never adopts a metadata-only copy: the session keeps what it read).
 
 The `relocated` line updates the project. Deleting a transcript never removes a finished task; history
 keeps it until the window expires. New subagent or sidecar files are registered from their path
@@ -448,6 +458,10 @@ CREATE TABLE scan_cache (                        -- estimate-scan progress per m
 - **Migration `v2`** adds `history_task.signals TEXT` (JSON `TaskSignals`: working folder, title, agent
   types, skills, tool names) and fills it for existing rows from their snapshots. `project_name` is
   kept but never read for display (data-sources §9).
+- **Migration `v3`** deletes the tasks older builds saved with no known start (`started_at` at or before
+  1970-01-01, see "No start, no task" in §3) and their runs, deleting the runs first because migrations run
+  with foreign keys off. Such a row holds only a title, and it was saved over the real task's row, so
+  there's nothing to repair it from. `loadHistory` skips any such row an older build writes later.
 - **Columns vs blobs:** columns hold only what we query, sort or prune by. The rest is the existing Codable
   snapshot, so additive snapshot fields need no migration (new fields must be optional). A row that fails to
   decode is ignored and rebuilt from the transcript if it still exists.
@@ -618,7 +632,8 @@ first sight. It is checked at start, by FSEvents on `agentdeck/`, and by the swe
    runs have exact usage.
 5. **Liveness.** Pid reuse is handled by the `procStart` check. Sessions with no pid file depend on the
    2-minute quiet rule, so their done status can lag by up to 2 min.
-6. **Relocation races** and duplicate session files: handled by the 2 s removal grace and newest-mtime-wins.
+6. **Relocation races** and duplicate session files: handled by the 2 s removal grace and by preferring the
+   copy holding a conversation, then the newest mtime (§4).
    A meta file read mid-write fails to decode and is retried on the next event or sweep.
 7. **Unparsed lines.** Lines over 64 MB are skipped. A line that never gets its newline (a crash) is never parsed.
 8. **Scale.** If roots grow far beyond 1 GB, tier 2 can be parallelized with a `TaskGroup` of nonisolated

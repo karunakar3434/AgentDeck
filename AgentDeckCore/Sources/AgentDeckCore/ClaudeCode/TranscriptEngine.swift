@@ -391,8 +391,8 @@ actor TranscriptEngine {
             return
         }
         if let oldStat = FileStat.of(path: old) {
-            // Both exist: the newest mtime wins, and the index points at the winner.
-            if newStat.mtime > oldStat.mtime {
+            // Both exist: the preferred copy wins (`prefers`), and the index points at the winner.
+            if prefers(new, newStat, over: old, oldStat) {
                 mainPathIndex[sid] = new
                 superseded.insert(old)
                 loadSession(sid, mainPath: new)       // re-read from the new file and its directory
@@ -837,14 +837,20 @@ actor TranscriptEngine {
                                         historyWindow: configuration.historyWindow)
         freezeEstimates(&s, status: status, now: now)
         let projectPath = s.projectPath
-        let output = SnapshotBuilder.build(
+        guard let output = SnapshotBuilder.build(
             s, status: status,
             definitionModel: { type in self.definitions.model(for: type, projectPath: projectPath, now: now) },
             estimate: { type, family in self.estimator.estimate(agentType: type, family: family) },
             finishedEstimate: { runID, type, family in
                 self.estimate(excludingRun: runID, agentType: type, family: family)
             },
-            classifier: workflowClassifier)
+            classifier: workflowClassifier) else {
+            // No line with a time yet: not a task. Nothing is shown or saved, so it can't replace the stored
+            // row of a real task with the same id; the state waits for real lines.
+            sessions[id] = s
+            deadlines[id] = orphanDeadline
+            return nil
+        }
         s.usedDefinitions = output.usedDefinitions
         sessions[id] = s
         recordTransitions(s, output.snapshot, signals: output.signals, status: status, now: now)
@@ -1100,15 +1106,18 @@ actor TranscriptEngine {
         superseded = superseded.filter { classifier.classify($0) != .main(sessionID: sid) }
     }
 
-    /// The session's main file is gone for good: forget its superseded duplicates and switch to the newest
-    /// one that still exists (it is re-read from 0).
+    /// The session's main file is gone for good: forget its superseded duplicates and switch to the preferred
+    /// one that still exists (it is re-read from 0). A duplicate holding only metadata lines isn't adopted:
+    /// the session keeps what it read, as it does when its transcript is deleted with no duplicate.
     private func adoptDuplicate(of sid: String) {
-        var best: (path: String, mtime: Date)?
+        var best: (path: String, stat: FileStat)?
         for path in superseded where classifier.classify(path) == .main(sessionID: sid) {
             superseded.remove(path)
-            if let st = FileStat.of(path: path), best.map({ st.mtime > $0.mtime }) ?? true { best = (path, st.mtime) }
+            if let st = FileStat.of(path: path), best.map({ prefers(path, st, over: $0.path, $0.stat) }) ?? true {
+                best = (path, st)
+            }
         }
-        if let best { handleMain(best.path, sessionID: sid) }
+        if let best, holdsConversation(best.path) { handleMain(best.path, sessionID: sid) }
     }
 
     // MARK: Helpers
@@ -1116,5 +1125,37 @@ actor TranscriptEngine {
     static func matches(_ stored: StoredTask, path: String, stat: FileStat) -> Bool {
         stored.transcriptPath == path && stored.fileID == stat.fileID && stored.fileSize == stat.size
             && abs(stored.fileMtime.timeIntervalSince(stat.mtime)) < 0.001
+    }
+
+    /// Bytes `holdsConversation` looks at. A main transcript of metadata lines only is about 1 KB.
+    static let conversationProbeLimit = 64 * 1024
+
+    /// Of two copies of a session's main transcript, whether `a` is the one to read: a copy holding a
+    /// conversation beats one holding only metadata lines, else the newest mtime wins. When the desktop app
+    /// moves a transcript, the session's old CLI can still write its metadata lines at the old path on its
+    /// way out, leaving a newer copy with nothing else in it (data-sources §1).
+    func prefers(_ a: String, _ aStat: FileStat, over b: String, _ bStat: FileStat) -> Bool {
+        let aHolds = holdsConversation(a), bHolds = holdsConversation(b)
+        if aHolds != bHolds { return aHolds }
+        return aStat.mtime > bStat.mtime
+    }
+
+    /// Whether a main transcript has a line that dates the session (a user, assistant, system or queue line),
+    /// not only metadata lines (titles, `last-prompt`, `mode`, `cost-state`, …). A file larger than
+    /// `conversationProbeLimit` counts as a conversation without being read.
+    func holdsConversation(_ path: String) -> Bool {
+        guard let data = FileIO.readSmallFile(path, limit: Self.conversationProbeLimit) else {
+            return FileStat.of(path: path) != nil
+        }
+        var s = SessionState(id: "")
+        let now = clock.now()
+        data.withUnsafeBytes { raw in
+            for line in raw.split(separator: 0x0A) where s.startedAt == nil {
+                if let event = parser.parse(UnsafeRawBufferPointer(rebasing: line)) {
+                    SessionReducer.apply(event, owner: .main, to: &s, now: now)
+                }
+            }
+        }
+        return s.startedAt != nil
     }
 }

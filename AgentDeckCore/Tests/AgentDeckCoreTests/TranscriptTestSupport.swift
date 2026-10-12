@@ -88,7 +88,8 @@ enum Fixtures {
         return s
     }
 
-    /// Builds a snapshot from a reduced state with fixture definitions and the default estimator.
+    /// Builds a snapshot from a reduced state with fixture definitions and the default estimator. The state
+    /// must have a dated line (every fixture session has).
     static func snapshot(_ s: SessionState, process: ProcessState? = nil, now: Date = Fixtures.now,
                          historyWindow: TimeInterval = 90 * 86_400,
                          classifier: WorkflowClassifier = Fixtures.classifier) -> TaskSnapshot {
@@ -99,7 +100,7 @@ enum Fixtures {
                                      definitionModel: { defs.model(for: $0, projectPath: s.projectPath, now: now) },
                                      estimate: { estimator.estimate(agentType: $0, family: $1) },
                                      finishedEstimate: { _, type, family in estimator.estimate(agentType: type, family: family) },
-                                     classifier: classifier).snapshot
+                                     classifier: classifier)!.snapshot
     }
 
     /// A writable copy of the fixtures in a temporary directory, every file's mtime set to `mtime`.

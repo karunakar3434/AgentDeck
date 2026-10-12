@@ -252,6 +252,8 @@ Each Claude Code session is a task. Its status comes from `sessions/<pid>.json` 
 
 The pid file is the only reliable "waiting on you" signal — Claude Code writes nothing to the transcript while a permission prompt is open. A process counts as alive only if `kill(pid, 0)` succeeds **and** its start time matches the pid file, so a reused pid can't resurrect an old session. Sessions without a pid file (older versions, remote sessions) depend on the 2-minute quiet rule, so they can take up to 2 minutes to show Done.
 
+A task starts at its first dated transcript line. A transcript of metadata lines only — a title, `last-prompt`, `mode`, `cost-state`, nothing with a timestamp — isn't a task yet. It doesn't show and it's never saved, because there's no start to show, and its history row would replace the real task's (same session id). That kind of file is what a desktop worktree session can leave behind. Once the worktree is gone, the desktop app moves the transcript to the repository's project folder ("Migrated transcript …" in `~/Library/Logs/Claude/main.log`), and the session's old process can still write its metadata lines at the old path on its way out. That leaves a newer copy with nothing else in it. So when a session's transcript is in two project folders, AgentDeck reads the copy that holds the conversation, and goes by the newer one only when both do or neither does.
+
 ### Which model an agent used
 
 The first hit wins:
@@ -595,9 +597,9 @@ Makefile
 make test
 ```
 
-That runs `swift test` in `AgentDeckCore/`: 249 tests, all written with Swift Testing, in two targets.
+That runs `swift test` in `AgentDeckCore/`: 254 tests, all written with Swift Testing, in two targets.
 
-- **`AgentDeckCoreTests`** (236 tests in 19 suites) covers the line scanner and parser, the session reducer, status rules, model names, the estimator, the history store, the update coalescer, FSEvents, the engine (incremental reads, truncation and replacement resets, moved sessions, pid and window timing, hook lines, estimate bookkeeping), the mock, and workflow groups: `WorkflowClassifierTests` (the order, folder sessions staying put, worktrees counting as their repository, title keywords, the TradingBot folder rule, temporary and home folders, skill and tool matching, the signals the reducer collects) and `WorkflowHistoryTests` (a scratch session moving to PubgMontages partway, a rule edit reclassifying history without transcripts, migrating stale `scratch-…` and worktree-named rows).
+- **`AgentDeckCoreTests`** (240 tests in 20 suites) covers the line scanner and parser, the session reducer, status rules, model names, the estimator, the history store, the update coalescer, FSEvents, the engine (incremental reads, truncation and replacement resets, moved sessions, pid and window timing, hook lines, estimate bookkeeping), the mock, workflow groups — `WorkflowClassifierTests` (the order, folder sessions staying put, worktrees counting as their repository, title keywords, the TradingBot folder rule, temporary and home folders, skill and tool matching, the signals the reducer collects) and `WorkflowHistoryTests` (a scratch session moving to PubgMontages partway, a rule edit reclassifying history without transcripts, migrating stale `scratch-…` and worktree-named rows) — and transcripts of metadata lines only: `MetadataOnlyTranscriptTests` (a moved worktree transcript whose old path gets metadata lines, live and at cold load; a transcript with no dated line neither showing nor replacing its task's history row; migration `v3` deleting rows saved with a 1970 start).
 - **`AgentDeckStateTests`** (14 tests, `DeckStoreTests.swift`) covers `DeckStore` and the live models: indexes, the sidebar order (groups, folders, Others), model identity across updates, the same run id in two sessions staying two models, dropped runs and tasks, models in use, reset, the throttled glance count, finish and subagent-failure notifications, idle elapsed time and task ETA.
 
 The app target has no tests of its own — the logic worth testing lives in the package.
@@ -653,6 +655,14 @@ It copies those sessions from `~/.claude/projects` into `Fixtures/projects/`, ke
   ```
 
 - `history_task.project_name` isn't what the sidebar shows — it's the entry when the row was written, and rows from builds before workflow groups still hold the raw folder name there (`Scratch`, `scratch-2026-10-02-cfe996`). The entry is always worked out again from `signals`.
+
+### A finished task shows hundreds of thousands of hours
+
+A duration like "497723h 56m" is a row an older build saved with a 1970-01-01 start. It came from a transcript holding only metadata lines ([Task status](#task-status) explains where those come from) and was saved over the real task's row. Launching a current build deletes those rows (history migration `v3`), skips any an older build writes later, and never saves one again. The task the row replaced doesn't come back — by then its transcript is usually deleted, and the row was the only copy. To check for leftovers:
+
+```sh
+sqlite3 -readonly ~/Library/Application\ Support/AgentDeck/agentdeck.sqlite "SELECT id, transcript_path FROM history_task WHERE started_at <= -978307200"
+```
 
 ### Resetting the history database
 

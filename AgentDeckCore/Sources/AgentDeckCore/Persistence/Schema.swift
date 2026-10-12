@@ -51,7 +51,26 @@ enum HistorySchema {
             try backfillSignals(db)
         }
 
+        // Tasks saved with no known start: see `deleteUndatedTasks`.
+        migrator.registerMigration("v3") { db in
+            try deleteUndatedTasks(db)
+        }
+
         return migrator
+    }
+
+    /// `started_at` of a task saved with no known start. Older builds built a session no line had dated (a
+    /// main transcript of metadata lines only) with a 1970-01-01 start, so History showed it running for
+    /// decades.
+    static let undatedStart = HistoryTime.column(Date(timeIntervalSince1970: 0))
+
+    /// v3: deletes the tasks saved with `undatedStart`. Such a row holds no conversation: no prompt, no runs, no
+    /// working folder, only a title. It isn't repairable either, because it was saved over the row of the real
+    /// task with the same id. Run rows go first: migrations run with foreign keys off, so the cascade wouldn't.
+    static func deleteUndatedTasks(_ db: Database) throws {
+        try db.execute(sql: "DELETE FROM history_run WHERE task_id IN (SELECT id FROM history_task WHERE started_at <= ?)",
+                       arguments: [undatedStart])
+        try db.execute(sql: "DELETE FROM history_task WHERE started_at <= ?", arguments: [undatedStart])
     }
 
     /// v2: fills `signals` for rows written before it, from what each row kept: the working folder, the

@@ -36,10 +36,21 @@ spaces too). The encoding is lossy, so **the real path is read from the `cwd` fi
 the first line that has one, never decoded from the directory name. That `cwd` is the
 task's working folder; which sidebar entry the task lands in is §9.
 
-Two complications seen on disk:
+Three complications seen on disk:
 - **Sessions can move.** After a `change_directory` the desktop app moves the `.jsonl` to
   the new project dir and appends `{"type":"relocated","sessionId":…,"relocatedCwd":…}`.
   Tasks are keyed by `sessionId`, not by path. `relocatedCwd` updates the project.
+- **A moved session can leave a metadata-only copy behind.** When a desktop worktree
+  session gets a message after its worktree is gone, the desktop app moves the transcript
+  from the worktree's project dir to the repository's (`[CCD] Migrated transcript <sid> from
+  …-claude-worktrees-<name> to …` in `~/Library/Logs/Claude/main.log`) and resumes the
+  session there. The session's old CLI can then write its metadata lines (`custom-title`,
+  `agent-name`, `last-prompt`, `mode`, `cost-state`) at the old path on its way out,
+  re-creating it as a ~1 KB `.jsonl` with no `timestamp` or `cwd` anywhere, newer than the
+  real transcript. Seen on 2026-10-12 for `c2aa8dd7…`. The next session migrated that day
+  (`3589c8b1…`) left no such file, so it's a race, not every migration. Newest-mtime-wins
+  alone picks the stub; the engine prefers the copy holding a conversation
+  (architecture §4).
 - **`cwd` changes line to line** when Bash runs `cd`. The task's project uses the first `cwd`
   (or the latest `relocatedCwd`).
 
@@ -54,7 +65,7 @@ One JSON object per line, appended as the session runs. Line `type` counts acros
 | `attachment` | 987 | 2431 | System context (reminders, queued commands) |
 | `system` | 244 | – | Turn boundaries, errors, compaction |
 | `queue-operation` | 413 | – | Prompt and notification queue |
-| `last-prompt`, `custom-title`, `agent-name`, `ai-title`, `atis-latch`, `mode`, `permission-mode`, `cost-state`, `bridge-session`, `relocated` | | – | Metadata, no `uuid`/`timestamp` |
+| `last-prompt`, `custom-title`, `agent-name`, `ai-title`, `atis-latch`, `mode`, `permission-mode`, `cost-state`, `bridge-session`, `relocated` | | – | Metadata, no `uuid`/`timestamp`. A main file can hold nothing else (§1) |
 | `file-history-snapshot`, `file-history-delta` | | – | Skipped |
 | `fork-context-ref` | – | 1 | First line of a forked agent |
 

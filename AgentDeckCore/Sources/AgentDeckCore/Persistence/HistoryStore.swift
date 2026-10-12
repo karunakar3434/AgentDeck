@@ -508,21 +508,23 @@ final class HistoryStore: Sendable {
 
     /// Finished tasks with `ended_at >= endedAfter`, newest `ended_at` first, each with its runs in stored
     /// order. A task whose row, or any of whose run rows, fails to decode is skipped as a whole, so the
-    /// engine rebuilds it from the transcript (if any) rather than showing it with runs missing.
+    /// engine rebuilds it from the transcript (if any) rather than showing it with runs missing. So is one an
+    /// older build saved with no known start (`HistorySchema.undatedStart`), which migration v3 deletes.
     @concurrent func loadHistory(endedAfter: Date) async -> [StoredTask] {
         let cutoff = HistoryTime.column(endedAfter)
+        let undated = HistorySchema.undatedStart
         do {
             return try await database.read { db in
                 let tasks = try HistoryTaskRecord.fetchAll(db, sql: """
-                    SELECT * FROM history_task WHERE ended_at >= ? ORDER BY ended_at DESC, id
-                    """, arguments: [cutoff])
+                    SELECT * FROM history_task WHERE ended_at >= ? AND started_at > ? ORDER BY ended_at DESC, id
+                    """, arguments: [cutoff, undated])
                 guard !tasks.isEmpty else { return [] }
                 let runs = try HistoryRunRecord.fetchAll(db, sql: """
                     SELECT history_run.* FROM history_run
                     JOIN history_task ON history_task.id = history_run.task_id
-                    WHERE history_task.ended_at >= ?
+                    WHERE history_task.ended_at >= ? AND history_task.started_at > ?
                     ORDER BY history_run.task_id, history_run.ord
-                    """, arguments: [cutoff])
+                    """, arguments: [cutoff, undated])
                 let runsByTask = Dictionary(grouping: runs, by: \.taskID)
                 let decoder = SnapshotCoding.makeDecoder()
                 var skipped = 0

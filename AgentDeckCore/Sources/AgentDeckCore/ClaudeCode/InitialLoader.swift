@@ -83,7 +83,8 @@ extension TranscriptEngine {
         if coalescer.markLoadComplete() { scheduleFlush() }
     }
 
-    /// Every `projects/<dir>/<sid>.jsonl`; for a session id in two directories the newest mtime wins.
+    /// Every `projects/<dir>/<sid>.jsonl`; for a session id in two directories the preferred copy wins
+    /// (`prefers`: one holding a conversation, else the newest mtime).
     func listMainCandidates() -> [String: MainCandidate] {
         var result: [String: MainCandidate] = [:]
         for dir in FileIO.list(projectsPath) {
@@ -95,7 +96,7 @@ extension TranscriptEngine {
                 guard case .main(let sid) = classifier.classify(path), let st = FileStat.of(path: path),
                       !st.isDirectory else { continue }
                 if let existing = result[sid] {
-                    if st.mtime > existing.stat.mtime {
+                    if prefers(path, st, over: existing.path, existing.stat) {
                         superseded.insert(existing.path)
                         result[sid] = MainCandidate(sessionID: sid, path: path, stat: st)
                     } else {
