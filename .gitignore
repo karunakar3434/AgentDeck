@@ -9,3 +9,4 @@ AgentDeckCore/.swiftpm/
 /profiles/
 /.claude/skills/my-writing-style/
 /.claude/settings.local.json
+/.claude/worktrees/
