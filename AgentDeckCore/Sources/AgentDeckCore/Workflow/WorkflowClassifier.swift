@@ -30,7 +30,8 @@ public struct ProjectEntry: Sendable, Hashable {
 /// 3. Otherwise Others.
 ///
 /// A session has no real project folder when its working folder is a Claude desktop scratch workspace,
-/// a temporary folder, the home folder itself, or unknown.
+/// a temporary folder, the home folder itself, or unknown. A Claude Code worktree stands for its
+/// repository (`projectFolder`).
 public struct WorkflowClassifier: Sendable {
     public let rules: WorkflowRules
     /// Expands "~" in folder patterns, and is never a real project folder itself.
@@ -60,8 +61,9 @@ public struct WorkflowClassifier: Sendable {
 
     /// Folders that aren't a project: a Claude desktop scratch workspace, a temporary folder
     /// (`/tmp`, `/private/tmp`, `/var/folders`, `/private/var/folders`), the home folder itself, `/`, or none.
+    /// A worktree is judged by its repository (`projectFolder`).
     public static func hasRealFolder(_ path: String, home: String) -> Bool {
-        let folder = standardized(path)
+        let folder = projectFolder(path)
         guard !folder.isEmpty, folder != "/" else { return false }
         if folder.contains("/scratch-workspaces/") { return false }
         if temporaryRoots.contains(where: { isInside(folder, $0) }) { return false }
@@ -70,9 +72,27 @@ public struct WorkflowClassifier: Sendable {
 
     static let temporaryRoots = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]
 
-    /// The folder's own name (last path component).
+    /// The project folder's own name (last path component), so a worktree is named after its repository.
     public static func folderName(_ path: String) -> String {
-        (standardized(path) as NSString).lastPathComponent
+        (projectFolder(path) as NSString).lastPathComponent
+    }
+
+    /// Where Claude Code puts a git worktree: `<repo>/.claude/worktrees/<name>` (`claude --worktree`,
+    /// `EnterWorktree`, and the desktop app's worktree sessions).
+    static let worktreesFolder = "/.claude/worktrees/"
+
+    /// The folder a working folder counts as. A Claude Code worktree is a checkout of its repository, so it
+    /// counts as the repository: `<repo>/.claude/worktrees/<name>/sub` is `<repo>/sub`. Read from the path
+    /// alone, so it still works once the worktree is removed (history rows keep their path).
+    public static func projectFolder(_ path: String) -> String {
+        var folder = standardized(path)
+        while let marker = folder.range(of: worktreesFolder, options: .caseInsensitive) {
+            let name = folder[marker.upperBound...].prefix { $0 != "/" }
+            guard !name.isEmpty else { break }
+            folder = String(folder[..<marker.lowerBound]) + folder[name.endIndex...]
+            if folder.isEmpty { return "/" }
+        }
+        return folder
     }
 
     /// Trimmed, without trailing slashes (except `/` itself).

@@ -375,7 +375,7 @@ as a hint to re-read the named transcript right away. The README has the snippet
 
 Each task goes in exactly one sidebar entry (`TaskSnapshot.projectName`, with `projectKind`),
 decided by `WorkflowClassifier` in this order: the first workflow group with a matching rule,
-else the real project folder (named after the folder), else Others. The rules themselves are
+else the real project folder (named after the folder; a worktree after its repository), else Others. The rules themselves are
 in the README (Projects and workflow groups); this section is what they read and why the
 defaults look the way they do.
 
@@ -412,6 +412,20 @@ sessions started without a folder:
 is inside `/tmp`, `/private/tmp`, `/var/folders` or `/private/var/folders` (for example a Claude
 Code scratchpad, `/private/tmp/claude-501/<encoded-cwd>/<sessionId>/scratchpad/…`), or is the
 home folder itself, `/`, or unknown. Paths compare ignoring case, like the default macOS volume.
+
+### Worktrees count as their repository
+
+`claude --worktree`, `EnterWorktree` and the desktop app's worktree sessions run in
+`<repo>/.claude/worktrees/<name>` (the desktop picks names like `cool-chaplygin-f89812`, on a
+`wt/<name>` branch). The session's transcript lives under its own encoded project dir
+(`-Users-dev-ai-engineer-course--claude-worktrees-cool-chaplygin-f89812`) and its `cwd` is the
+worktree, so naming the entry after the folder would give every worktree session its own entry.
+`WorkflowClassifier.projectFolder` takes `/.claude/worktrees/<name>` out of the path instead —
+`<repo>/.claude/worktrees/<name>/sub` reads as `<repo>/sub` — and the entry name and the
+"no real project folder" check use that. Folder rules still see the full path, which has the
+repo as a parent. It's string-only, with no git lookup: once a worktree session is gone, its worktree is
+usually removed and its project dir can hold just a `<sid>.desktop-released.json`
+(`"reason":"delete"`), so a history row's path is all there is to go on.
 
 The September sessions that start in the home folder and later `cd ~/voice-assistant` land in
 Others: their working folder is the first `cwd`. Following `cd` instead would let any session

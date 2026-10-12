@@ -50,6 +50,29 @@ import Testing
         #expect(Self.entry("/Users/dev/Projects/new-thing") == Self.folder("new-thing"))
     }
 
+    @Test func worktreeSessionsStayUnderTheirRepository() {
+        // `claude --worktree` and the desktop app's worktree sessions: <repo>/.claude/worktrees/<name>.
+        let worktree = "/Users/dev/ai-engineer-course/.claude/worktrees/cool-chaplygin-f89812"
+        #expect(Self.entry(worktree, title: "Close stale open sessions") == Self.folder("ai-engineer-course"))
+        #expect(WorkflowClassifier.projectFolder(worktree) == "/Users/dev/ai-engineer-course")
+        #expect(Self.entry("/Users/dev/Projects/AgentDeck/.Claude/Worktrees/fix-login/") == Self.folder("AgentDeck"))
+        // A folder inside a worktree is named like the same folder in the main checkout.
+        #expect(Self.entry("/Users/dev/Projects/AgentDeck/.claude/worktrees/fix-login/AgentDeckCore")
+                == Self.folder("AgentDeckCore"))
+        // Title keywords still don't apply: the worktree is a real folder.
+        #expect(Self.entry("/Users/dev/Projects/AgentDeck/.claude/worktrees/x", title: "PUBG montage") == Self.folder("AgentDeck"))
+        // Folder rules match the repository.
+        #expect(Self.entry("/Users/dev/Projects/Multi-agent-trading-bot/.claude/worktrees/x") == Self.group("TradingBot"))
+        #expect(Self.entry("/Users/dev/Projects/Pubg_Tools/.claude/worktrees/x") == Self.group("PubgMontages"))
+        // A worktree of the home folder is the home folder.
+        #expect(Self.entry("/Users/dev/.claude/worktrees/x") == .others)
+        #expect(Self.entry("/.claude/worktrees/x") == .others)
+        // Only that layout counts.
+        #expect(Self.entry("/Users/dev/Projects/AgentDeck/.claude/worktrees") == Self.folder("worktrees"))
+        #expect(Self.entry("/Users/dev/Projects/AgentDeck-worktrees/fix-login") == Self.folder("fix-login"))
+        #expect(WorkflowClassifier.projectFolder("") == "")
+    }
+
     @Test func titleKeywordDoesNotPullARealFolderSessionIntoAGroup() {
         let title = "Show the Gmail unread count next to the PUBG montage preview"
         #expect(Self.entry("/Users/dev/Projects/AgentDeck", title: title) == Self.folder("AgentDeck"))

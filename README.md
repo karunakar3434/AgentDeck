@@ -144,6 +144,8 @@ Each task goes in exactly one sidebar entry, decided in this order:
 
 A session has no project folder when its working folder (its first `cwd`, or where the desktop app moved it) is a Claude desktop scratch workspace (`…/scratch-workspaces/…`, what the desktop app makes for a session started without a folder), a temporary folder (`/tmp`, `/private/tmp`, `/var/folders`, `/private/var/folders`), or your home folder itself. Everything else is a project folder. A later `cd` doesn't count — otherwise an AgentDeck session that peeks into another repo would jump entries.
 
+A Claude Code worktree (`<repo>/.claude/worktrees/<name>`, what `claude --worktree`, `EnterWorktree` and the desktop app's worktree sessions make) counts as its repository: a session in `~/ai-engineer-course/.claude/worktrees/cool-chaplygin-f89812` lands under **ai-engineer-course**, not under an entry named after the worktree. It's read from the path alone, so it still holds after the worktree is removed.
+
 Workflow groups and Others are listed even with no tasks. A folder that shares a group's name, or is called Others, merges into that entry.
 
 A group matches when any one of its rules does:
@@ -595,7 +597,7 @@ make test
 
 That runs `swift test` in `AgentDeckCore/`: 249 tests, all written with Swift Testing, in two targets.
 
-- **`AgentDeckCoreTests`** (235 tests in 19 suites) covers the line scanner and parser, the session reducer, status rules, model names, the estimator, the history store, the update coalescer, FSEvents, the engine (incremental reads, truncation and replacement resets, moved sessions, pid and window timing, hook lines, estimate bookkeeping), the mock, and workflow groups: `WorkflowClassifierTests` (the order, folder sessions staying put, title keywords, the TradingBot folder rule, temporary and home folders, skill and tool matching, the signals the reducer collects) and `WorkflowHistoryTests` (a scratch session moving to PubgMontages partway, a rule edit reclassifying history without transcripts, migrating stale `scratch-…` rows).
+- **`AgentDeckCoreTests`** (236 tests in 19 suites) covers the line scanner and parser, the session reducer, status rules, model names, the estimator, the history store, the update coalescer, FSEvents, the engine (incremental reads, truncation and replacement resets, moved sessions, pid and window timing, hook lines, estimate bookkeeping), the mock, and workflow groups: `WorkflowClassifierTests` (the order, folder sessions staying put, worktrees counting as their repository, title keywords, the TradingBot folder rule, temporary and home folders, skill and tool matching, the signals the reducer collects) and `WorkflowHistoryTests` (a scratch session moving to PubgMontages partway, a rule edit reclassifying history without transcripts, migrating stale `scratch-…` and worktree-named rows).
 - **`AgentDeckStateTests`** (14 tests, `DeckStoreTests.swift`) covers `DeckStore` and the live models: indexes, the sidebar order (groups, folders, Others), model identity across updates, the same run id in two sessions staying two models, dropped runs and tasks, models in use, reset, the throttled glance count, finish and subagent-failure notifications, idle elapsed time and task ETA.
 
 The app target has no tests of its own — the logic worth testing lives in the package.

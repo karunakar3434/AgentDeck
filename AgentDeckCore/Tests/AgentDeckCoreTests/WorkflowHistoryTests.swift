@@ -202,6 +202,8 @@ import Testing
                                      title: "Video quality enhancement", agentTypes: [])
                 try Self.insertV1Row(db, id: "second", folder: "/private/tmp/claude-501/x/scratchpad/second-session",
                                      title: "Make two Agent tool calls", agentTypes: ["Explore", "Explore"])
+                try Self.insertV1Row(db, id: "worktree", folder: "/Users/dev/ai-engineer-course/.claude/worktrees/cool-chaplygin-f89812",
+                                     title: "Close stale open sessions", agentTypes: [])
             }
             try pool.close()
         }
@@ -223,10 +225,11 @@ import Testing
         let h = try EngineHarness(root: Self.emptyRoot(), alive: [], history: store)
         defer { h.cleanup() }
         await h.engine.loadInitial()
-        #expect(await Self.entries(h.engine) == ["gmail": "GmailMonitor", "video": "PubgMontages", "second": "Others"])
+        #expect(await Self.entries(h.engine) == ["gmail": "GmailMonitor", "video": "PubgMontages", "second": "Others",
+                                                 "worktree": "ai-engineer-course"])
         let stored = await store.loadHistory(endedAfter: .distantPast)
-        #expect(stored.count == 3)
-        #expect(stored.allSatisfy { $0.snapshot.projectName.hasPrefix("scratch-") || $0.snapshot.projectName == "second-session" },
+        #expect(stored.count == 4)
+        #expect(stored.allSatisfy { ["scratch-", "second-session", "cool-chaplygin-"].contains(where: $0.snapshot.projectName.hasPrefix) },
                 "the rows still hold the old names; only the entries are recomputed")
         await store.close()
     }
