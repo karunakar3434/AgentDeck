@@ -578,11 +578,14 @@ AgentDeckCore/               Swift package with everything that isn't a view
   Tests/AgentDeckCoreTests/  Swift Testing suites and Fixtures/
   Tests/AgentDeckStateTests/ DeckStoreTests (Swift Testing)
 docs/                        data-sources.md, architecture.md
+.claude/agents/              The Claude Code agents AgentDeck was built with
 scripts/                     debugctl, profiling, fixtures, app icon
 Makefile
 ```
 
 `AgentDeck.xcodeproj` uses a folder-synchronized group for `AgentDeck/`, so a new Swift file anywhere under `AgentDeck/` is compiled without touching `project.pbxproj`. `AgentDeckCore` is a local package whose two library products, `AgentDeckCore` and `AgentDeckState`, the app links, and SwiftPM picks up new files the same way. `scripts/make-icon.swift` regenerates the app icon into `AgentDeck/Assets.xcassets/AppIcon.appiconset` (`swift scripts/make-icon.swift` from the repo root).
+
+`.claude/agents/` holds the six agents that designed, built, reviewed, tested and documented AgentDeck — `system-architect`, `software-engineer`, `code-reviewer`, `code-improver`, `test-writer` and `docs-writer` — so a Claude Code session in a clone gets them as project agents. `docs-writer` loads a `my-writing-style` skill when one is installed. That skill is personal and gitignored, so in a clone `docs-writer` falls back to the tone of the existing docs.
 
 ## Testing
 
@@ -590,9 +593,9 @@ Makefile
 make test
 ```
 
-That runs `swift test` in `AgentDeckCore/`: 248 tests, all written with Swift Testing, in two targets.
+That runs `swift test` in `AgentDeckCore/`: 249 tests, all written with Swift Testing, in two targets.
 
-- **`AgentDeckCoreTests`** (234 tests in 19 suites) covers the line scanner and parser, the session reducer, status rules, model names, the estimator, the history store, the update coalescer, FSEvents, the engine (incremental reads, truncation and replacement resets, moved sessions, pid and window timing, hook lines, estimate bookkeeping), the mock, and workflow groups: `WorkflowClassifierTests` (the order, folder sessions staying put, title keywords, the TradingBot folder rule, temporary and home folders, skill and tool matching, the signals the reducer collects) and `WorkflowHistoryTests` (a scratch session moving to PubgMontages partway, a rule edit reclassifying history without transcripts, migrating stale `scratch-…` rows).
+- **`AgentDeckCoreTests`** (235 tests in 19 suites) covers the line scanner and parser, the session reducer, status rules, model names, the estimator, the history store, the update coalescer, FSEvents, the engine (incremental reads, truncation and replacement resets, moved sessions, pid and window timing, hook lines, estimate bookkeeping), the mock, and workflow groups: `WorkflowClassifierTests` (the order, folder sessions staying put, title keywords, the TradingBot folder rule, temporary and home folders, skill and tool matching, the signals the reducer collects) and `WorkflowHistoryTests` (a scratch session moving to PubgMontages partway, a rule edit reclassifying history without transcripts, migrating stale `scratch-…` rows).
 - **`AgentDeckStateTests`** (14 tests, `DeckStoreTests.swift`) covers `DeckStore` and the live models: indexes, the sidebar order (groups, folders, Others), model identity across updates, the same run id in two sessions staying two models, dropped runs and tasks, models in use, reset, the throttled glance count, finish and subagent-failure notifications, idle elapsed time and task ETA.
 
 The app target has no tests of its own — the logic worth testing lives in the package.
@@ -670,3 +673,7 @@ The glob also removes `-wal`, `-shm` and any `agentdeck.sqlite.broken-*` files. 
 
 - `xcodebuild` complaining that it requires Xcode means the Command Line Tools are selected: `sudo xcode-select -s /Applications/Xcode.app`.
 - The first build needs network access to fetch GRDB. After that, builds work offline.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
