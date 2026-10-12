@@ -82,6 +82,7 @@ final class AppModel {
         rulesTask?.cancel()
         appliedRules = rules
         store.setWorkflowGroups(rules.groupNames)
+        followRenamedGroups(to: rules)
         let new: any AgentSource
         if isMock {
             new = MockAgentSource(scenario: isStress ? .stress : .demo, rules: rules)
@@ -123,21 +124,34 @@ final class AppModel {
     private func applyWorkflowRules() async {
         let rules = workflowRules
         guard rules != appliedRules else { return }
-        if let old = appliedRules { followRenamedGroups(from: old, to: rules) }
         appliedRules = rules
         store.setWorkflowGroups(rules.groupNames)
+        followRenamedGroups(to: rules)
         await source?.setWorkflowRules(rules)
     }
 
-    /// Keeps the selected sidebar entry and the project filter on a group that was renamed.
-    private func followRenamedGroups(from old: WorkflowRules, to new: WorkflowRules) {
-        let renamed = Dictionary(new.groups.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
-        for group in old.groups {
-            let before = group.displayName
-            guard let after = renamed[group.id], after != before, !after.isEmpty else { continue }
-            if nav.section == .project(before) { nav.section = .project(after) }
-            if nav.filters.projects.remove(before) != nil { nav.filters.projects.insert(after) }
+    /// Each active group's last name, by id. Kept while a group is briefly inactive (its name cleared or
+    /// clashing mid-edit), so a rename through an empty name is still followed.
+    @ObservationIgnored private var activeGroupNames: [UUID: String] = [:]
+
+    /// Keeps the selected sidebar entry and the project filter on a group that was renamed, and lets go of
+    /// a deleted group's entry. Call after the store has the new group names.
+    private func followRenamedGroups(to rules: WorkflowRules) {
+        let now = Dictionary(rules.activeGroups.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+        let names = Set(rules.groupNames)
+        let ids = Set(rules.groups.map(\.id))
+        for (id, before) in activeGroupNames where !names.contains(before) {
+            if let after = now[id] {
+                // Renamed (the old name is no entry any more, so it's this group's).
+                if nav.section == .project(before) { nav.section = .project(after) }
+                if nav.filters.projects.remove(before) != nil { nav.filters.projects.insert(after) }
+            } else if !ids.contains(id), !store.projects.contains(before) {
+                // Deleted, and no folder project has the name.
+                if nav.section == .project(before) { nav.show(.active) }
+                nav.filters.projects.remove(before)
+            }
         }
+        activeGroupNames = activeGroupNames.filter { ids.contains($0.key) }.merging(now) { _, new in new }
     }
 
     private var lastBadge: Int = -1

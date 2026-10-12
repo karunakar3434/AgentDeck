@@ -368,6 +368,33 @@ import Testing
         #expect(log.updates.last?.0.changed.isEmpty == true)
     }
 
+    /// A live finish re-dirties other tasks that use its agent type mid-flush; they must be re-sent, not removed.
+    @Test func liveFinishDoesNotRemoveTasksSharingItsAgentType() async throws {
+        let h = try EngineHarness(alive: [])
+        defer { h.cleanup() }
+        let log = UpdateLog()
+        let stream = await h.engine.updates()
+        let consumer = Task { for await u in stream { log.append(u, at: h.clock.now()) } }
+        defer { consumer.cancel() }
+        #expect(await eventually { await h.engine.isInitialLoadComplete })
+        await advanceFrame(h)
+        #expect(await eventually { log.count == 1 })
+        #expect(log.updates.first?.0.changed.contains { $0.id == Fixtures.f275 } == true)
+
+        // f275 has finished localbiz-qa runs with unfrozen estimates; 08cb finishes one live.
+        let main = h.path(Self.relativeMain(Fixtures.s08cb))
+        let lines = [
+            SessionReducerTests.prompt("go", ts: "2026-10-02T23:59:00.000Z"),
+            SessionReducerTests.agentCall(id: "toolu_QA", ts: "2026-10-02T23:59:01.000Z", type: "localbiz-qa"),
+            #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_QA","content":"x"}]},"toolUseResult":{"status":"completed","agentId":"qa1","agentType":"localbiz-qa","totalDurationMs":42000},"timestamp":"2026-10-02T23:59:43.500Z"}"#,
+        ]
+        try Self.append(Data((lines.joined(separator: "\n") + "\n").utf8), to: main)
+        await h.engine.handle([FSChange(path: main)])
+        await advanceFrame(h)
+        #expect(await eventually { log.updates.contains { $0.0.changed.contains { $0.run("toolu_QA")?.status == .done } } })
+        #expect(log.updates.allSatisfy { !$0.0.removed.contains(Fixtures.f275) })
+    }
+
     @Test func coalescerEmitsAtMostOneBatchPerFrameAndNoneWhenIdle() async throws {
         let h = try EngineHarness(alive: [])
         defer { h.cleanup() }

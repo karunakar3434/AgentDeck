@@ -203,6 +203,10 @@ private struct RuleField: View {
                 let parsed = Self.parse(new)
                 if parsed != values { values = parsed }
             }
+            .onChange(of: values) { _, new in
+                // Changed from outside (Restore Defaults): show the new values instead of writing stale text back.
+                if Self.parse(text) != new { text = new.joined(separator: ", ") }
+            }
     }
 
     static func parse(_ text: String) -> [String] {

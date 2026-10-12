@@ -390,10 +390,10 @@ actor TranscriptEngine {
             }
             return
         }
-        mainPathIndex[sid] = new
         if let oldStat = FileStat.of(path: old) {
-            // Both exist: the newest mtime wins.
+            // Both exist: the newest mtime wins, and the index points at the winner.
             if newStat.mtime > oldStat.mtime {
+                mainPathIndex[sid] = new
                 superseded.insert(old)
                 loadSession(sid, mainPath: new)       // re-read from the new file and its directory
             } else {
@@ -401,6 +401,7 @@ actor TranscriptEngine {
             }
             return
         }
+        mainPathIndex[sid] = new
         if newStat.fileID == oldFile.fileID {
             // Moved: rebind and keep the offset.
             var moved = oldFile
@@ -788,8 +789,16 @@ actor TranscriptEngine {
         guard !stopped else { return }
         let now = clock.now()
         var built: [String: TaskSnapshot] = [:]
-        for id in coalescer.dirty {
-            if let s = build(id, now: now) { built[id] = s }
+        // Building can mark other tasks dirty (a live finish re-dirties tasks whose estimates use that type).
+        // Build those too: the coalescer treats a dirty id with no snapshot as out of scope and removes it.
+        var attempted = Set<String>()
+        var pending = coalescer.dirty
+        while !pending.isEmpty {
+            for id in pending {
+                attempted.insert(id)
+                if let s = build(id, now: now) { built[id] = s }
+            }
+            pending = coalescer.dirty.subtracting(attempted)
         }
         let result = coalescer.flush(into: continuation) { built[$0] }
         switch result {
