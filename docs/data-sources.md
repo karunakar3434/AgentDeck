@@ -31,7 +31,7 @@ largest file 10.2 MB. 18 files changed in the last 24 h. Retention is `cleanupPe
 ### Directory name encoding
 
 The directory name is the session's starting cwd with every non-alphanumeric character
-replaced by `-` (`/Users/karun/Projects/AgentDeck` → `-Users-karun-Projects-AgentDeck`,
+replaced by `-` (`/Users/dev/Projects/AgentDeck` → `-Users-dev-Projects-AgentDeck`,
 spaces too). The encoding is lossy, so **the real path is read from the `cwd` field** of
 the first line that has one, never decoded from the directory name. That `cwd` is the
 task's working folder; which sidebar entry the task lands in is §9.
@@ -75,7 +75,7 @@ strictly monotonic in file order (queue operations interleave), so state uses ma
  "message":{"role":"user","content":"…(11174 chars)"},"uuid":"bae29393-…",
  "timestamp":"2026-10-02T23:56:28.204Z","permissionMode":"auto","origin":{"kind":"human"},
  "promptSource":"sdk","turnOrigin":"human","turnPosition":{"promptIndex":1,"turnIndex":1},
- "userType":"external","entrypoint":"claude-desktop","cwd":"/Users/karun/…",
+ "userType":"external","entrypoint":"claude-desktop","cwd":"/Users/dev/…",
  "sessionId":"fb4572c1-…","version":"2.1.286","gitBranch":"HEAD"}
 ```
 
@@ -312,7 +312,7 @@ Agent definitions on this Mac (`~/.claude/agents/`): 10 use `inherit`, 4 `sonnet
 `~/.claude/sessions/<pid>.json` exists for every running Claude Code process and is removed on exit:
 
 ```json
-{"pid":3156,"sessionId":"fb4572c1-…","cwd":"/Users/karun/…","startedAt":1790985387487,
+{"pid":3156,"sessionId":"fb4572c1-…","cwd":"/Users/dev/…","startedAt":1790985387487,
  "procStart":"Fri Oct  2 23:56:27 2026","version":"2.1.286","kind":"interactive",
  "entrypoint":"claude-desktop","name":"…","status":"busy","updatedAt":1790985388548,
  "statusUpdatedAt":1790985388036}
