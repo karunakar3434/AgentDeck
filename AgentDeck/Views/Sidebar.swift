@@ -20,10 +20,10 @@ struct Sidebar: View {
                     Image(systemName: "bolt.horizontal.circle.fill")
                 }
                 .badge(store.activeTaskIDs.count)
-                .tag(SidebarSection.active)
+                .sidebarEntry(.active)
 
                 Label("History", systemImage: "clock.arrow.circlepath")
-                    .tag(SidebarSection.history)
+                    .sidebarEntry(.history)
             }
 
             // Workflow groups in their configured order, folder projects A–Z, then Others.
@@ -31,7 +31,7 @@ struct Sidebar: View {
                 ForEach(store.projects, id: \.self) { name in
                     ProjectRow(name: name, kind: store.projectKind(of: name),
                                active: store.activeCountByProject[name] ?? 0)
-                        .tag(SidebarSection.project(name))
+                        .sidebarEntry(.project(name))
                 }
             }
         }
@@ -54,5 +54,29 @@ private struct ProjectRow: View {
             Image(systemName: kind.symbol(filled: active > 0))
         }
         .badge(active)
+    }
+}
+
+/// Tags a row with its section. Clicking the row that's already selected doesn't change the List's
+/// selection, so the binding never hears of it; the click is caught here too and, with a task open,
+/// goes back to the entry's list, as Back does.
+private struct SidebarEntry: ViewModifier {
+    var section: SidebarSection
+    @Environment(Navigator.self) private var nav
+
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.rect)
+            .simultaneousGesture(TapGesture().onEnded {
+                if nav.openTaskID != nil { nav.show(section) }
+            })
+            .tag(section)
+    }
+}
+
+private extension View {
+    func sidebarEntry(_ section: SidebarSection) -> some View {
+        modifier(SidebarEntry(section: section))
     }
 }

@@ -58,7 +58,8 @@ enum DebugAutomation {
                 if t.runIDs.indices.contains(i) { nav.inspect(t.runIDs[i], in: open) }
             }
         case "inspector":
-            withAnimation(Theme.spring) { nav.showInspector = rest.first != "off" }
+            // Through the navigator, so it follows the app's rules (no inspector without an open task).
+            if rest.first == "off" { nav.hideInspector() } else if !nav.showInspector { nav.toggleInspector() }
         case "palette":
             withAnimation(Theme.spring) { nav.showPalette = rest.first != "off" }
         case "search":
@@ -141,6 +142,19 @@ enum DebugAutomation {
             let mainH = NSScreen.screens.first?.frame.height ?? 0
             cg.location = CGPoint(x: screenPoint.x, y: mainH - screenPoint.y)
             if let e = NSEvent(cgEvent: cg) { w.sendEvent(e) }
+        case "click":
+            // click <x> <y>: a left click in the main window at x, y points from its top left (in-process, no permissions).
+            guard let w = mainWindow(), rest.count == 2, let x = Double(rest[0]), let y = Double(rest[1]) else { break }
+            NSApp.activate()
+            w.makeKeyAndOrderFront(nil)
+            // Queued rather than sent, so a control's mouse-tracking loop (a table row) finds the up.
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                if let e = NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: w.frame.height - y), modifierFlags: [],
+                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                                              context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                    NSApp.postEvent(e, atStart: false)
+                }
+            }
         case "menulabel":
             // Accessibility text of the menu bar item (the label view sets it from the live count).
             var out: [String] = []

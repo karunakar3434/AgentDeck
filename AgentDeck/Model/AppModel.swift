@@ -73,9 +73,7 @@ final class AppModel {
         let old = source
         Task { await old?.stop() }
         store.reset()
-        nav.openTaskID = nil
-        nav.inspectedRunID = nil
-        nav.highlightedTaskID = nil
+        nav.reset()
 
         let d = UserDefaults.standard
         let rules = workflowRules
@@ -101,6 +99,7 @@ final class AppModel {
             for await update in await new.updates() {
                 if Task.isCancelled { break }
                 store.apply(update)
+                self?.closeVanishedTask()
                 self?.resolvePendingOpen()
             }
         }
@@ -173,6 +172,13 @@ final class AppModel {
         pendingOpenTaskID = nil
         nav.section = t.status.isActive ? .active : .history
         nav.openTask(id)
+    }
+
+    /// The open task left the store (it aged out of the history window, or the simulator pruned it). The detail
+    /// already falls back to the list, so leave the task properly — otherwise its inspector, Back button and
+    /// title stay up beside that list.
+    private func closeVanishedTask() {
+        if let id = nav.openTaskID, store.tasks[id] == nil { nav.closeTask() }
     }
 
     private func resolvePendingOpen() {

@@ -11,8 +11,7 @@ struct InspectorView: View {
         Group {
             if Experiments.has("noinspector") {
                 Color.clear
-            } else if let id = nav.inspectedRunID, let run = store.runs[id],
-                      nav.openTaskID == nil || run.taskID == nav.openTaskID {
+            } else if let id = nav.inspectedRunID, let run = store.runs[id], run.taskID == nav.openTaskID {
                 RunInspector(run: run)
                     .id(id)
                     .transition(.opacity)

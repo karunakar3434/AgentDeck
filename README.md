@@ -127,8 +127,8 @@ The LaunchAgent opens AgentDeck by bundle id, not by path, so it launches whiche
 The sidebar has **Active**, **History**, and **Projects**: the workflow groups in their configured order, then one entry per project folder (named after the folder), then **Others** — each badged with its number of active tasks. [Projects and workflow groups](#projects-and-workflow-groups) explains which entry a task lands in.
 
 - **Active** — a header strip with live counts (active tasks, running agents, models in use, the longest-running agent) above one card per task that's running or waiting on you. A card shows the title, elapsed time, project, git branch, main model, an avatar per agent (as many as fit, up to 12, then "+N"), and the task's ETA — or "Waiting on you" when Claude needs an answer or a permission. Clicking the longest-running tile jumps to that agent.
-- **Task detail** — click a card or press Return. A header with status, title, project entry, the real working folder (a workflow group's task still shows its scratch folder, say), branch, model and ETA, then the **agent tree** (main agent, subagents, nested subagents indented under their parent, a moon on background agents, the current tool call, elapsed time, a progress ring against the estimate) and a **timeline** drawn with Swift Charts: one bar per agent, a faint extension to its expected end, and a dashed "now" line. Click a row or a bar to inspect that agent.
-- **Inspector** — the selected agent's status, model, start and end times, estimate with its confidence and sample count, tool-call count, tokens, full prompt, result summary and recent tool calls.
+- **Task detail** — click a card or press Return. A header with status, title, project entry, the real working folder (a workflow group's task still shows its scratch folder, say), branch, model and ETA, then the **agent tree** (main agent, subagents, nested subagents indented under their parent, a moon on background agents, the current tool call, elapsed time, a progress ring against the estimate) and a **timeline** drawn with Swift Charts: one bar per agent, a faint extension to its expected end, and a dashed "now" line. Click a row or a bar to inspect that agent. To get back to the list, click **Back**, press Esc (twice with the inspector open), or click a sidebar entry — the one that's already selected included, so a project's other tasks are one click away.
+- **Inspector** — the selected agent's status, model, start and end times, estimate with its confidence and sample count, tool-call count, tokens, full prompt, result summary and recent tool calls. It belongs to the open task: leaving the task closes it, and ⌥⌘I does nothing while no task is open. It's never on screen beside a task list either — leaving a task, the inspector goes first and the list fades in after it; opening a task straight into its inspector (the longest-running tile, the palette, the menu bar), the task comes first. Builds that kept it open beside a list crashed: that layout (cards, toolbar and an inspector column) could send AppKit into an endless constraints loop, about 60% of the time in a stress loop of opening and leaving tasks. Cross-fading the list in while the column slid out still crashed about once in 40 tries, and hiding the column in the same update as the switch about once in 140, because SwiftUI can keep the column up until running animations end.
 - **History** — tasks that are idle, done or failed, grouped Today / Yesterday / Earlier. Each row shows the total time, number of agents, how many ran over their estimate, and up to six actual-vs-estimated bars ("1m 10s / ~1m" — the dashed outline is the estimate, orange means over).
 - **A project entry** — its active cards above its history.
 
@@ -180,7 +180,7 @@ An entry can change while a task runs: a scratch session that calls `pubg-montag
 | ⌘1 / ⌘2 | Active / History |
 | ⌘K | Go to a task or agent (palette) |
 | ⌘F | Search tasks and agents |
-| ⌥⌘I | Show or hide the inspector |
+| ⌥⌘I | Show or hide the inspector (with a task open) |
 | ⌘, | Settings |
 | ↑ / ↓ | In a list: move the highlight. In an open task: select the previous or next agent (opens the inspector) |
 | Return | Open the highlighted task, or the first one if nothing is highlighted |
@@ -548,6 +548,7 @@ build/debugctl snapshot /tmp/agentdeck.png
 | `filter status <status>`, `filter model <family>`, `filter clear` | Filters, using raw values (`running`, `opus`, …) |
 | `key <chars> [cmd] [opt] [shift]`, `key up\|down\|return\|escape` | In-process key events to the main window |
 | `scroll <dy> [x y]` | A synthesized scroll-wheel event |
+| `click <x> <y>` | A left click in the main window, in points from its top left. It goes through AppKit, so it reaches the sidebar's rows like a real click — but only while AgentDeck can come to the front; while you're typing in another app macOS keeps it behind, and the click just activates the window |
 | `resize <w> <h>`, `appearance dark\|light` | Window size; appearance (anything else follows the system) |
 | `mock`, `mock stress`, `mock off` | Switch the data source |
 | `meter start`, `meter stop [path]` | Frame meter (default `/tmp/agentdeck-meter.txt`) |
@@ -680,6 +681,10 @@ The glob also removes `-wal`, `-shm` and any `agentdeck.sqlite.broken-*` files. 
 - Check that `~/.claude/agentdeck/events.jsonl` grows while an agent runs (`tail -f`). If it doesn't, start a new Claude Code session and check `~/.claude/settings.json` parses.
 - AgentDeck starts reading at the file's end, so lines written before it noticed the file never count. If you created the folder while AgentDeck was running, give it a minute or relaunch.
 - On a healthy machine it shouldn't look any different — see [Optional hooks for lower latency](#optional-hooks-for-lower-latency).
+
+### AgentDeck quits with the inspector open
+
+With a task open and its inspector showing, AgentDeck can still quit with "AgentDeck quit unexpectedly". That's AppKit giving up on an endless constraints loop (`NSGenericException`, "more Update Constraints in Window passes than there are views in the window") — the same loop that crashed when the inspector stayed open beside a task list, which is fixed. This one turns up under the simulator's constant updates (3 of 6 thirty-second holds of a task with its inspector), and no crash report from an installed build has turned up with real sessions yet. Until it's fixed, hiding the inspector (Esc or ⌥⌘I) when you're done with it avoids it.
 
 ### The build fails
 

@@ -30,10 +30,11 @@ struct MainToolbar: ToolbarContent {
             .help("Jump to a task or agent (⌘K)")
 
             Button {
-                withAnimation(Theme.spring) { nav.showInspector.toggle() }
+                nav.toggleInspector()
             } label: {
                 Label("Inspector", systemImage: "sidebar.trailing")
             }
+            .disabled(nav.openTaskID == nil)
             .help("Show or hide the inspector (⌥⌘I)")
         }
     }

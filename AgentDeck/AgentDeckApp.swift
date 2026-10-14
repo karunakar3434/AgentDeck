@@ -66,10 +66,9 @@ struct AppCommands: Commands {
                 .keyboardShortcut("k", modifiers: .command)
             Button("Search") { app.nav.isSearchFocused = true }
                 .keyboardShortcut("f", modifiers: .command)
-            Button(app.nav.showInspector ? "Hide Inspector" : "Show Inspector") {
-                withAnimation(Theme.spring) { app.nav.showInspector.toggle() }
-            }
-            .keyboardShortcut("i", modifiers: [.command, .option])
+            // Guarded in toggleInspector, not .disabled: a menu command's disabled state didn't follow the open task, so ⌥⌘I stayed off.
+            Button(app.nav.showInspector ? "Hide Inspector" : "Show Inspector") { app.nav.toggleInspector() }
+                .keyboardShortcut("i", modifiers: [.command, .option])
             Divider()
         }
 

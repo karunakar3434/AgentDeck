@@ -19,12 +19,12 @@ struct MainWindow: View {
             DetailContainer()
                 // Wide windows: a trailing inspector column. Narrow windows (beside an editor):
                 // the inspector slides over the detail instead of squeezing it.
-                .inspector(isPresented: Binding(get: { nav.showInspector && !isNarrow },
+                .inspector(isPresented: Binding(get: { inspectorShown && !isNarrow },
                                                 set: { nav.showInspector = $0 })) {
                     InspectorView()
                 }
                 .overlay(alignment: .trailing) {
-                    if isNarrow && nav.showInspector {
+                    if isNarrow && inspectorShown {
                         NarrowInspector()
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
@@ -49,6 +49,9 @@ struct MainWindow: View {
             withAnimation(Theme.spring) { columnVisibility = narrow ? .detailOnly : .automatic }
         }
     }
+
+    /// Only beside an open task: there's nothing to inspect in a list.
+    private var inspectorShown: Bool { nav.showInspector && nav.openTaskID != nil }
 
     private var title: String {
         if let id = nav.openTaskID, let t = store.tasks[id] { return t.projectName }
@@ -98,7 +101,7 @@ private struct DetailContainer: View {
             return .ignored
         }
         .onKeyPress(.escape) {
-            if nav.showInspector && nav.openTaskID != nil { withAnimation(Theme.spring) { nav.showInspector = false }; return .handled }
+            if nav.showInspector && nav.openTaskID != nil { nav.hideInspector(); return .handled }
             if nav.openTaskID != nil { nav.closeTask(); return .handled }
             return .ignored
         }
@@ -180,7 +183,7 @@ private struct NarrowInspector: View {
             .background(.background)
             .overlay(alignment: .topTrailing) {
                 Button {
-                    withAnimation(Theme.spring) { nav.showInspector = false }
+                    nav.hideInspector()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption.weight(.bold))
