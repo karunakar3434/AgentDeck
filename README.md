@@ -584,6 +584,7 @@ AgentDeckCore/               Swift package with everything that isn't a view
   Tests/AgentDeckStateTests/ DeckStoreTests (Swift Testing)
 docs/                        data-sources.md, architecture.md
 .claude/agents/              The Claude Code agents AgentDeck was built with
+CLAUDE.md                    Instructions for Claude Code sessions: how the version number goes up
 scripts/                     debugctl, profiling, fixtures, app icon
 Makefile
 ```
