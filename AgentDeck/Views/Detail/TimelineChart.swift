@@ -23,6 +23,7 @@ struct TimelineChart: View {
         // A minutes-wide Gantt chart doesn't need per-second precision; Charts rebuilds are costly.
         let now = Clock.shared.coarseNow
         let runs = store.runs(of: task)
+        let selected = nav.selectedRunID
         let bars = runs.enumerated().map { i, r in
             Bar(
                 id: r.id,
@@ -31,7 +32,7 @@ struct TimelineChart: View {
                 end: max(r.endedAt ?? now, r.startedAt.addingTimeInterval(1)),
                 estimateEnd: r.isMain || r.status.isFinished ? nil : r.expectedEnd,
                 color: r.status.color,
-                isSelected: nav.inspectedRunID == r.id
+                isSelected: selected == r.id
             )
         }
         let domainStart = task.startedAt
@@ -48,7 +49,7 @@ struct TimelineChart: View {
                 BarMark(xStart: .value("Start", bar.start), xEnd: .value("End", bar.end), y: .value("Agent", bar.label))
                     .foregroundStyle(bar.color.gradient)
                     .cornerRadius(4)
-                    .opacity(nav.inspectedRunID == nil || bar.isSelected ? 1 : 0.55)
+                    .opacity(selected == nil || bar.isSelected ? 1 : 0.55)
             }
             if task.endedAt == nil {
                 RuleMark(x: .value("Now", now))

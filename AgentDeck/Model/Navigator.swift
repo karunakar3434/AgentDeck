@@ -34,6 +34,9 @@ final class Navigator {
     /// The run shown in the inspector.
     var inspectedRunID: String?
     var showInspector = false
+    /// The run highlighted in the open task's tree and timeline: the inspected one, only while the inspector
+    /// is up. Hiding it keeps `inspectedRunID`, so showing it again comes back to the same agent.
+    var selectedRunID: String? { showInspector ? inspectedRunID : nil }
     var showPalette = false
     var searchText = ""
     var isSearchFocused = false

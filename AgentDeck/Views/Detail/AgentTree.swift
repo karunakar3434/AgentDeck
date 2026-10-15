@@ -11,7 +11,7 @@ struct AgentTree: View {
         let ordered = task.runsInTreeOrder
         LazyVStack(alignment: .leading, spacing: 2) {
             ForEach(ordered, id: \.id) { run in
-                AgentRow(run: run, task: task, isSelected: nav.inspectedRunID == run.id && nav.showInspector)
+                AgentRow(run: run, task: task, isSelected: nav.selectedRunID == run.id)
                     .padding(.leading, CGFloat(run.depth) * 18)
                     .contentShape(.rect)
                     .onTapGesture { nav.inspect(run.id, in: task.id) }
