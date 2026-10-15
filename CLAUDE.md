@@ -13,8 +13,21 @@ The version is `MARKETING_VERSION` in `AgentDeck.xcodeproj/project.pbxproj`, wri
 
 - **When the main version changes.** With the next feature or fix, never on its own — nothing gets committed when nothing changes. The first feature or fix on or after one of those dates ships as `<main>.0` (on 2026-10-28, 1.4 → 2.0, not 1.5), and the ones after it go .1, .2. A period with no changes doesn't hold the number back: a first change on 2026-11-12 goes from 1.x straight to 3.0.
 
-Say the new version in the commit message. After `make install`, check the installed app has it — a build that failed leaves the old app in place:
+Say the new version in the commit message.
 
-```sh
-defaults read /Applications/AgentDeck.app/Contents/Info.plist CFBundleShortVersionString
-```
+## Installing
+
+Install every change to the app once it's merged, without waiting to be asked. `/Applications/AgentDeck.app` is the copy in daily use. On 2026-10-11 it was still a nine-day-old build whose sidebar showed folder entries that `main` had already moved under Others, and time went into chasing a bug that was already fixed. A change that doesn't touch the app (docs, tests, scripts, `.claude/`) doesn't need it.
+
+- **When.** After the merge is on `origin/main` and the worktree is cleaned up, so the install, not the cleanup, is the session's last step. Install from the updated main checkout, not the worktree branch — an unmerged build puts code in `/Applications` that `main` doesn't have.
+- **How.** Removing the worktree deletes the shell's working directory, and commands run from it fail, so point `make` at the main checkout. It builds Release, quits the running AgentDeck, replaces `/Applications/AgentDeck.app` and opens it:
+
+  ```sh
+  make -C ~/Projects/AgentDeck install
+  ```
+
+- **Check.** The installed app should report the new version — a build that failed leaves the old app in place and running:
+
+  ```sh
+  defaults read /Applications/AgentDeck.app/Contents/Info.plist CFBundleShortVersionString
+  ```
